@@ -15,7 +15,9 @@ FROM base AS runner
 ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN cd apps/api && bunx prisma generate
+# prisma.config.ts вычисляет env('DATABASE_URL') при загрузке → нужен фиктивный URL даже для generate
+# (подключение к БД не выполняется).
+RUN cd apps/api && DATABASE_URL="postgresql://build:build@localhost:5432/build" bunx prisma generate
 EXPOSE 3000
 WORKDIR /app/apps/api
 # применяем миграции, сидим супер-админа (идемпотентно) и стартуем

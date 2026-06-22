@@ -1,5 +1,6 @@
-# Запуск: `bun run docker:up` (= docker compose --env-file .env -f infra/docker/docker-compose.yml up -d --build)
-# nginx НЕ здесь — он живёт на хост-машине и проксирует на api (127.0.0.1:3000).
+# Единая сборка из КОРНЯ репозитория:  docker compose up -d --build
+# Поднимает postgres + redis + ollama + api + web. nginx — на хост-машине
+# (пример: infra/nginx/embeding-api.conf), проксирует на api и web.
 
 services:
   postgres:
@@ -12,7 +13,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:5432:5432" # для локальной разработки; в проде можно убрать
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-embeding}"]
       interval: 5s
@@ -37,8 +38,8 @@ services:
     volumes:
       - ollama:/root/.ollama
     ports:
-      - "127.0.0.1:11434:11434" # опционально; api ходит к нему по сети compose
-    # GPU (NVIDIA): раскомментировать и установить nvidia-container-toolkit на хосте
+      - "127.0.0.1:11434:11434"
+    # GPU (NVIDIA): раскомментировать + установить nvidia-container-toolkit
     # deploy:
     #   resources:
     #     reservations:
@@ -49,7 +50,7 @@ services:
 
   api:
     build:
-      context: ../..
+      context: .
       dockerfile: infra/docker/api.Dockerfile
     restart: unless-stopped
     depends_on:
@@ -64,20 +65,19 @@ services:
       PORT: 3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-embeding}:${POSTGRES_PASSWORD:-embeding}@postgres:5432/${POSTGRES_DB:-embeding}?schema=public
       OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-120000}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       CHAT_CONCURRENCY: ${CHAT_CONCURRENCY:-1}
       EMBED_CONCURRENCY: ${EMBED_CONCURRENCY:-3}
-      # Bun + BullMQ: отключаем нативный msgpackr-extract (крашит Bun)
       MSGPACKR_NATIVE_ACCELERATION_DISABLED: "true"
-      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-120000}
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?задай JWT_ACCESS_SECRET в .env}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?задай JWT_REFRESH_SECRET в .env}
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-30d}
       APIKEY_HMAC_SECRET: ${APIKEY_HMAC_SECRET:?задай APIKEY_HMAC_SECRET в .env}
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3001}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       HTTP_BODY_LIMIT: ${HTTP_BODY_LIMIT:-25mb}
       MAX_EMBED_INPUT_ITEMS: ${MAX_EMBED_INPUT_ITEMS:-2048}
@@ -85,9 +85,26 @@ services:
       SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:?задай SUPERADMIN_EMAIL в .env}
       SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:?задай SUPERADMIN_PASSWORD в .env}
     ports:
-      - "127.0.0.1:3000:3000" # слушаем только localhost; наружу проксирует хостовый nginx
+      - "127.0.0.1:3000:3000"
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        # URL API, как его видит БРАУЗЕР. Пусто = same-origin (когда хостовый nginx
+        # роутит / → web и /v1,/auth,/admin,/keys → api). Для прямого доступа задать,
+        # напр. WAKU_PUBLIC_API_URL=http://localhost:3000 в .env.
+        WAKU_PUBLIC_API_URL: ${WAKU_PUBLIC_API_URL:-}
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      PORT: 8080
+    ports:
+      - "127.0.0.1:8080:8080"
 
 volumes:
   pgdata:
-  ollama:
   redis:
+  ollama:

@@ -34,15 +34,18 @@ bun run db:seed               # создать супер-админа из ENV
 bun run dev                   # api + web в watch-режиме
 ```
 
-## Запуск в контейнерах
+## Запуск в контейнерах (одна команда из корня)
 
 ```bash
-cp .env.example .env
-bun run docker:up             # ollama + postgres + api
+cp .env.example .env          # заполнить секреты
+docker compose up -d --build  # postgres + redis + ollama + api + web
 ```
 
-nginx живёт на **хост-машине** (не в compose) и проксирует на контейнер API
-(`127.0.0.1:3000`) — пример в [infra/nginx/embeding-api.conf](infra/nginx/embeding-api.conf).
+nginx живёт на **хост-машине** (не в compose) и проксирует на контейнеры:
+`/` → web (`127.0.0.1:8080`), а `/v1`, `/auth`, `/admin`, `/keys` → api (`127.0.0.1:3000`).
+Пример: [infra/nginx/embeding-api.conf](infra/nginx/embeding-api.conf). При доступе через
+хостовый nginx (same-origin) оставьте `WAKU_PUBLIC_API_URL` пустым; для прямого доступа к web
+задайте его в `.env` (напр. `http://localhost:3000`).
 
 ## Бизнес-правило про ключи
 

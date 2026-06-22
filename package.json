@@ -13,12 +13,13 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "test:e2e": "bash scripts/test-e2e.sh",
     "typecheck": "turbo run typecheck",
     "db:generate": "turbo run db:generate --filter=@embeding/api",
     "db:migrate": "turbo run db:migrate --filter=@embeding/api",
     "db:seed": "turbo run db:seed --filter=@embeding/api",
-    "docker:up": "docker compose --env-file .env -f infra/docker/docker-compose.yml up -d --build",
-    "docker:down": "docker compose --env-file .env -f infra/docker/docker-compose.yml down"
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down"
   },
   "devDependencies": {
     "prettier": "^3.4.2",

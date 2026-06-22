@@ -119,12 +119,16 @@ turbo run dev --filter=web
 > выключается → NestJS-DI инжектит `undefined`. Симптом `TypeError ... config.get` на старте = неверный cwd,
 > а не баг кода. **Не** запускать `bun run apps/api/src/main.ts` из корня репо.
 
-**Тесты — нативный `bun test`** (рантайм проекта — Bun, поэтому без отдельного раннера). Запуск одного теста:
+**Тесты — нативный `bun test`.** Unit (без инфры) и e2e (реальные Postgres+Redis):
 
 ```bash
-cd apps/api && bun test src/path/to/file.test.ts                 # один файл
-cd apps/api && bun test -t "название теста"                      # по имени теста
+turbo run test                  # unit во всех воркспейсах (apps/api/test/unit, packages/schemas/test)
+bun run test:e2e                # e2e: scripts/test-e2e.sh поднимает Postgres+Redis, мигрирует, гоняет apps/api/test/e2e
+cd apps/api && bun test test/unit/ms.test.ts        # один файл
+cd apps/api && bun test -t "название теста"          # по имени
 ```
+e2e бутает реальное Nest-приложение (NestFactory) против одноразовых контейнеров и проверяет
+критичные флоу: auth+ротация+reuse-detection, гейтинг ключа PENDING→APPROVED, /v1/*, admin, очередь→502.
 
 **Prisma (из `apps/api`):**
 
@@ -136,12 +140,13 @@ bunx prisma studio                        # GUI к БД
 bun run prisma/seed.ts                    # сид супер-админа из ENV
 ```
 
-**Контейнеры (из корня):**
+**Контейнеры (одна команда из корня):**
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml up -d --build   # ollama + postgres + api
-docker compose -f infra/docker/docker-compose.yml logs -f api
+docker compose up -d --build   # postgres + redis + ollama + api + web (compose в корне)
+docker compose logs -f api
 ```
+Dockerfile'ы — в `infra/docker/` (api: Bun; web: сборка Bun → сервинг Node). nginx — на хосте.
 
 ## Конвенции
 
