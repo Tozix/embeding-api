@@ -5,6 +5,7 @@ import { CHAT_QUEUE, EMBED_QUEUE } from '../queue/inference.types';
 import { UsageRecorderModule } from './usage-recorder.module';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsController } from './analytics.controller';
+import { SystemMetricsService } from '../system/system-metrics.service';
 
 @Module({
   imports: [
@@ -14,6 +15,6 @@ import { AnalyticsController } from './analytics.controller';
     UsageRecorderModule, // AnalyticsLive (та же шина, что у recorder'а)
   ],
   controllers: [AnalyticsController],
-  providers: [AnalyticsService],
+  providers: [AnalyticsService, SystemMetricsService],
 })
 export class UsageModule {}

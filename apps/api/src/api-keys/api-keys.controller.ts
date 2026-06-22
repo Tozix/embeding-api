@@ -12,6 +12,7 @@ import {
   CreateApiKeySchema,
   type ApiKeyCreated,
   type ApiKeyPublic,
+  type AuthUser,
   type CreateApiKeyInput,
 } from '@embeding/schemas/auth';
 import { ApiKeyService } from './api-key.service';
@@ -19,7 +20,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 
-/** Управление СВОИМИ ключами (веб-кабинет). Новый ключ — всегда PENDING. */
+/** Управление СВОИМИ ключами (веб-кабинет). Ключ PENDING; у супер-админа — сразу APPROVED. */
 @Controller('keys')
 @UseGuards(JwtAuthGuard)
 export class ApiKeysController {
@@ -28,10 +29,15 @@ export class ApiKeysController {
   @Post()
   @HttpCode(201)
   create(
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthUser,
     @Body(new ZodValidationPipe(CreateApiKeySchema)) dto: CreateApiKeyInput,
   ): Promise<ApiKeyCreated> {
-    return this.service.create(userId, dto);
+    // Супер-админ может выпустить себе рабочий ключ без отдельного одобрения.
+    const opts =
+      user.role === 'SUPERADMIN'
+        ? { autoApprove: true, approvedBy: user.id }
+        : undefined;
+    return this.service.create(user.id, dto, opts);
   }
 
   @Get()

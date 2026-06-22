@@ -59,6 +59,52 @@ export class AdminModelsService {
     return rows.map(toAdminModel);
   }
 
+  /** Загрузить модель в память (прогрев). Блокирует, пока Ollama не загрузит. */
+  async load(id: string): Promise<{ ok: true }> {
+    const model = await this.requireModel(id);
+    await this.ollama.loadModel(model.ollamaName, model.kind);
+    return { ok: true };
+  }
+
+  /** Выгрузить модель из памяти. */
+  async unload(id: string): Promise<{ ok: true }> {
+    const model = await this.requireModel(id);
+    await this.ollama.unloadModel(model.ollamaName, model.kind);
+    return { ok: true };
+  }
+
+  /** Рантайм-статус: какие зарегистрированные модели сейчас в памяти (Ollama /api/ps). */
+  async runtime(): Promise<
+    (AdminModelDto & {
+      loaded: boolean;
+      sizeBytes: number;
+      expiresAt: string | null;
+    })[]
+  > {
+    const [models, running] = await Promise.all([
+      this.prisma.model.findMany({ orderBy: { displayName: 'asc' } }),
+      this.ollama.listRunning().catch(() => []),
+    ]);
+    return models.map((m) => {
+      // Ollama в /api/ps может вернуть имя с тегом (:latest) — матчим точно и по имени без тега.
+      const r = running.find(
+        (x) => x.name === m.ollamaName || x.name.split(':')[0] === m.ollamaName,
+      );
+      return {
+        ...toAdminModel(m),
+        loaded: Boolean(r),
+        sizeBytes: r?.sizeBytes ?? 0,
+        expiresAt: r?.expiresAt ?? null,
+      };
+    });
+  }
+
+  private async requireModel(id: string): Promise<DbModel> {
+    const model = await this.prisma.model.findUnique({ where: { id } });
+    if (!model) throw new NotFoundException('Модель не найдена');
+    return model;
+  }
+
   async create(dto: CreateModelInput): Promise<AdminModelDto> {
     try {
       const model = await this.prisma.model.create({

@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { ApiKeyStatusSchema, ModelKindSchema, RoleSchema } from '../common/enums.js';
+import {
+  ApiKeyStatusSchema,
+  EmailSchema,
+  ModelKindSchema,
+  RoleSchema,
+} from '../common/enums.js';
 
 // displayName модели не должен содержать '/' — иначе ломается путь /v1/models/:model в Express.
 const ModelDisplayName = z
@@ -24,6 +29,15 @@ export const AdminUpdateUserSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'Пустое обновление' });
 export type AdminUpdateUserInput = z.infer<typeof AdminUpdateUserSchema>;
+
+/** Супер-админ создаёт пользователя из админки (можно сразу роль SUPERADMIN). */
+export const AdminCreateUserSchema = z.object({
+  email: EmailSchema,
+  password: z.string().min(8, 'Пароль не короче 8 символов').max(200),
+  displayName: z.string().min(1).max(80).optional(),
+  role: RoleSchema.default('USER'),
+});
+export type AdminCreateUserInput = z.infer<typeof AdminCreateUserSchema>;
 
 // ---------- ключи ----------
 

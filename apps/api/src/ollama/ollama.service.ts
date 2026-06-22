@@ -125,6 +125,53 @@ export class OllamaService {
     return (data.models ?? []).map((m) => m.name);
   }
 
+  /** Загрузить модель в память (прогрев). keep_alive=-1 — держать до явной выгрузки. */
+  async loadModel(ollamaName: string, kind: 'EMBEDDING' | 'CHAT'): Promise<void> {
+    if (kind === 'EMBEDDING') {
+      await this.post('/api/embed', {
+        model: ollamaName,
+        input: 'warmup',
+        keep_alive: -1,
+      });
+    } else {
+      await this.post('/api/generate', { model: ollamaName, keep_alive: -1 });
+    }
+  }
+
+  /** Выгрузить модель из памяти (keep_alive=0). */
+  async unloadModel(ollamaName: string, kind: 'EMBEDDING' | 'CHAT'): Promise<void> {
+    if (kind === 'EMBEDDING') {
+      await this.post('/api/embed', {
+        model: ollamaName,
+        input: 'x',
+        keep_alive: 0,
+      });
+    } else {
+      await this.post('/api/generate', { model: ollamaName, keep_alive: 0 });
+    }
+  }
+
+  /** Модели, сейчас загруженные в память (Ollama /api/ps). */
+  async listRunning(): Promise<
+    { name: string; sizeBytes: number; sizeVramBytes: number; expiresAt: string | null }[]
+  > {
+    const res = await this.request('/api/ps', { method: 'GET' });
+    const data = (await res.json()) as {
+      models?: {
+        name: string;
+        size?: number;
+        size_vram?: number;
+        expires_at?: string;
+      }[];
+    };
+    return (data.models ?? []).map((m) => ({
+      name: m.name,
+      sizeBytes: m.size ?? 0,
+      sizeVramBytes: m.size_vram ?? 0,
+      expiresAt: m.expires_at ?? null,
+    }));
+  }
+
   private post(
     path: string,
     body: unknown,

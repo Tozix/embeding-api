@@ -21,6 +21,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsLive } from './realtime';
+import { SystemMetricsService } from '../system/system-metrics.service';
 
 /** Аналитика для дашборда (только SUPERADMIN). live — SSE; фронт читает его fetch-стримом с Bearer. */
 @Controller('admin/analytics')
@@ -30,7 +31,14 @@ export class AnalyticsController {
   constructor(
     private readonly analytics: AnalyticsService,
     private readonly live: AnalyticsLive,
+    private readonly system: SystemMetricsService,
   ) {}
+
+  /** CPU/RAM хоста: текущий снимок + история для графика «за период». */
+  @Get('system')
+  systemMetrics() {
+    return this.system.snapshot();
+  }
 
   @Get('summary')
   summary(@Query(new ZodValidationPipe(AnalyticsRangeSchema)) q: AnalyticsRange) {
@@ -66,6 +74,14 @@ export class AnalyticsController {
       switchMap(() => from(this.analytics.queues())),
       map((queues) => ({ data: { type: 'queues', queues } }) as MessageEvent),
     );
-    return merge(usage$, queues$);
+    const system$ = interval(2000).pipe(
+      map(
+        () =>
+          ({
+            data: { type: 'system', system: this.system.snapshot().current },
+          }) as MessageEvent,
+      ),
+    );
+    return merge(usage$, queues$, system$);
   }
 }

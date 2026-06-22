@@ -3,8 +3,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import bcrypt from 'bcryptjs';
 import type { PublicUser } from '@embeding/schemas/auth';
-import type { AdminUpdateUserInput, ListQuery } from '@embeding/schemas/admin';
+import type {
+  AdminCreateUserInput,
+  AdminUpdateUserInput,
+  ListQuery,
+} from '@embeding/schemas/admin';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, Role } from '../prisma/client';
 import { toPublicUser } from '../common/mappers/user.mapper';
@@ -12,6 +17,30 @@ import { toPublicUser } from '../common/mappers/user.mapper';
 @Injectable()
 export class AdminUsersService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /** Создать пользователя из админки (роль по умолчанию USER; можно сразу SUPERADMIN). */
+  async create(dto: AdminCreateUserInput): Promise<PublicUser> {
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          email: dto.email,
+          passwordHash,
+          displayName: dto.displayName ?? null,
+          role: dto.role,
+        },
+      });
+      return toPublicUser(user);
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        throw new ConflictException('Пользователь с таким email уже существует');
+      }
+      throw e;
+    }
+  }
 
   async list(query: ListQuery): Promise<{
     items: PublicUser[];

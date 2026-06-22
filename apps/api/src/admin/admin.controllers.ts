@@ -12,12 +12,14 @@ import {
 } from '@nestjs/common';
 import {
   AdminCreateKeySchema,
+  AdminCreateUserSchema,
   AdminKeysQuerySchema,
   AdminUpdateUserSchema,
   CreateModelSchema,
   ListQuerySchema,
   UpdateModelSchema,
   type AdminCreateKeyInput,
+  type AdminCreateUserInput,
   type AdminKeysQuery,
   type AdminUpdateUserInput,
   type CreateModelInput,
@@ -47,6 +49,15 @@ export class AdminUsersController {
   @Get()
   list(@Query(new ZodValidationPipe(ListQuerySchema)) query: ListQuery) {
     return this.users.list(query);
+  }
+
+  /** Создать пользователя (роль по умолчанию USER; можно сразу SUPERADMIN). */
+  @Post()
+  @HttpCode(201)
+  create(
+    @Body(new ZodValidationPipe(AdminCreateUserSchema)) dto: AdminCreateUserInput,
+  ) {
+    return this.users.create(dto);
   }
 
   @Get(':id')
@@ -121,6 +132,26 @@ export class AdminModelsController {
   @Get()
   list() {
     return this.models.list();
+  }
+
+  /** Рантайм-статус: какие модели сейчас загружены в память (для real-time мониторинга). */
+  @Get('runtime')
+  runtime() {
+    return this.models.runtime();
+  }
+
+  /** Загрузить модель в память (прогрев). Блокирует, пока Ollama не загрузит. */
+  @Post(':id/load')
+  @HttpCode(200)
+  load(@Param('id') id: string) {
+    return this.models.load(id);
+  }
+
+  /** Выгрузить модель из памяти. */
+  @Post(':id/unload')
+  @HttpCode(200)
+  unload(@Param('id') id: string) {
+    return this.models.unload(id);
   }
 
   @Post()
