@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   Post,
   Req,
@@ -33,6 +34,7 @@ export class OpenAiController {
   constructor(private readonly service: OpenAiService) {}
 
   @Post('embeddings')
+  @HttpCode(200) // OpenAI отдаёт 200, а не дефолтный для POST 201
   embeddings(
     @CurrentApiKey() key: ApiKeyContext,
     @Body(new ZodValidationPipe(EmbeddingsRequestSchema)) dto: EmbeddingsRequest,

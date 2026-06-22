@@ -24,5 +24,7 @@ COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/packages /app/packages
 COPY --from=build /app/apps/web /app/apps/web
 EXPOSE 8080
-# waku-бинарь имеет node-shebang; запускаем prod-сервер под Node
-CMD ["node", "/app/node_modules/.bin/waku", "start", "--port", "8080"]
+# `waku build` генерирует штатный Node-сервер dist/serve-node.js (слушает PORT, 0.0.0.0).
+# Запускаем его напрямую — не через bin waku, т.к. bun-раскладка node_modules не даёт
+# /app/node_modules/.bin/waku под Node.
+CMD ["node", "dist/serve-node.js"]
