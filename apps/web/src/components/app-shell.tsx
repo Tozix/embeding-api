@@ -4,7 +4,11 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useRouter } from 'waku';
 import { useAuth } from '../lib/auth';
 
-const USER_NAV = [{ to: '/app/keys', label: 'Мои API-ключи' }] as const;
+const USER_NAV = [
+  { to: '/app/keys', label: 'Мои API-ключи' },
+  { to: '/app/chat', label: 'Чат с моделью' },
+  { to: '/app/playground', label: 'Песочница' },
+] as const;
 const ADMIN_NAV = [
   { to: '/admin/dashboard', label: 'Дашборд нагрузки' },
   { to: '/admin/users', label: 'Пользователи' },

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { api, streamSse } from '../lib/api';
 import { clockTime, ms, num } from '../lib/format';
-import { TimeseriesChart, TopBars } from './charts';
+import { SystemChart, TimeseriesChart, TopBars } from './charts';
 import { Spinner } from './ui';
 
 type Summary = {
@@ -23,6 +23,13 @@ type Point = {
 type TopItem = { key: string; label: string; requests: number; totalTokens: number };
 type Counts = { waiting: number; active: number; delayed: number; failed: number };
 type Queues = { chat: Counts; embeddings: Counts };
+type SysPoint = {
+  ts: number;
+  cpu: number;
+  memUsed: number;
+  memTotal: number;
+  load1: number;
+};
 type FeedItem = {
   id: string;
   endpoint: string;
@@ -68,6 +75,9 @@ export function Dashboard() {
   const [queues, setQueues] = useState<Queues | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [liveOn, setLiveOn] = useState(false);
+  const [system, setSystem] = useState<SysPoint | null>(null);
+  const [sysHistory, setSysHistory] = useState<SysPoint[]>([]);
+  const [cpuCount, setCpuCount] = useState(0);
 
   const loadAggregates = async () => {
     try {
@@ -94,12 +104,30 @@ export function Dashboard() {
       .catch(() => setTop([]));
   }, [topBy]);
 
+  // начальный снимок метрик хоста (история для графика); далее обновляется через SSE
+  useEffect(() => {
+    void api<{ cpuCount: number; current: SysPoint; history: SysPoint[] }>(
+      '/admin/analytics/system',
+    )
+      .then((s) => {
+        setCpuCount(s.cpuCount);
+        setSystem(s.current);
+        setSysHistory(s.history);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     const ac = new AbortController();
     streamSse(
       '/admin/analytics/live',
       (data) => {
-        const ev = data as { type: string; event?: FeedItem; queues?: Queues };
+        const ev = data as {
+          type: string;
+          event?: FeedItem;
+          queues?: Queues;
+          system?: SysPoint;
+        };
         setLiveOn(true);
         if (ev.type === 'usage' && ev.event) {
           const e = ev.event;
@@ -116,6 +144,10 @@ export function Dashboard() {
           );
         } else if (ev.type === 'queues' && ev.queues) {
           setQueues(ev.queues);
+        } else if (ev.type === 'system' && ev.system) {
+          const sp = ev.system;
+          setSystem(sp);
+          setSysHistory((h) => [...h, sp].slice(-300));
         }
       },
       ac.signal,
@@ -167,6 +199,21 @@ export function Dashboard() {
             queues ? `${queues.embeddings.active} в работе · ${queues.embeddings.waiting} ждут` : '—'
           }
         />
+        {system && (
+          <>
+            <Metric
+              label="CPU"
+              value={`${system.cpu}%`}
+              sub={`${cpuCount} ядер · load ${system.load1}`}
+              accent
+            />
+            <Metric
+              label="RAM"
+              value={`${(system.memUsed / 1e9).toFixed(1)} / ${(system.memTotal / 1e9).toFixed(1)} ГБ`}
+              sub={`${Math.round((system.memUsed / system.memTotal) * 100)}% занято`}
+            />
+          </>
+        )}
       </div>
 
       <div className="panel">
@@ -186,6 +233,23 @@ export function Dashboard() {
         </div>
         <div className="panel-body">
           <TimeseriesChart points={series} />
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2>Нагрузка сервера (реальное время)</h2>
+          <span className="row gap-2 muted" style={{ fontSize: '0.78rem' }}>
+            <span className="row gap-1">
+              <span style={{ width: 12, height: 2, background: 'var(--accent)' }} /> CPU
+            </span>
+            <span className="row gap-1">
+              <span style={{ width: 12, height: 2, background: 'var(--live)' }} /> RAM
+            </span>
+          </span>
+        </div>
+        <div className="panel-body">
+          <SystemChart points={sysHistory} />
         </div>
       </div>
 

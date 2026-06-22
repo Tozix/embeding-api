@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import type { PublicUser } from '@embeding/schemas/auth';
 import { api, ApiError } from '../lib/api';
 import { relTime } from '../lib/format';
 import { useToast } from './toast';
-import { EmptyState, Spinner } from './ui';
+import { EmptyState, Field, Spinner } from './ui';
 
 type Page = { items: PublicUser[]; total: number; page: number; pageSize: number };
 
@@ -13,6 +13,14 @@ export function AdminUsers() {
   const { toast } = useToast();
   const [data, setData] = useState<Page | null>(null);
   const [page, setPage] = useState(1);
+  const [showForm, setShowForm] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({
+    email: '',
+    password: '',
+    displayName: '',
+    role: 'USER' as 'USER' | 'SUPERADMIN',
+  });
 
   const load = async (p = page) => {
     try {
@@ -48,6 +56,30 @@ export function AdminUsers() {
     }
   };
 
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    setCreating(true);
+    try {
+      await api('/admin/users', {
+        method: 'POST',
+        body: {
+          email: form.email,
+          password: form.password,
+          role: form.role,
+          ...(form.displayName ? { displayName: form.displayName } : {}),
+        },
+      });
+      toast('Пользователь создан', 'ok');
+      setForm({ email: '', password: '', displayName: '', role: 'USER' });
+      setShowForm(false);
+      await load(1);
+    } catch (x) {
+      toast(x instanceof ApiError ? x.message : 'Ошибка', 'err');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const pages = data ? Math.ceil(data.total / data.pageSize) : 1;
 
   return (
@@ -57,8 +89,74 @@ export function AdminUsers() {
           <h1>Пользователи</h1>
           <p>Роли, блокировка и удаление. Систему нельзя оставить без активного супер-админа.</p>
         </div>
-        <span className="muted mono">{data?.total ?? 0}</span>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={() => setShowForm((v) => !v)}
+        >
+          {showForm ? 'Отмена' : '+ Пользователь'}
+        </button>
       </div>
+
+      {showForm && (
+        <form className="panel" onSubmit={create}>
+          <div className="panel-body stack gap-2">
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+              <Field label="Email">
+                <input
+                  className="input"
+                  type="email"
+                  required
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                />
+              </Field>
+              <Field label="Пароль (8+)">
+                <input
+                  className="input"
+                  type="password"
+                  required
+                  minLength={8}
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                />
+              </Field>
+              <Field label="Имя (необяз.)">
+                <input
+                  className="input"
+                  value={form.displayName}
+                  onChange={(e) =>
+                    setForm({ ...form, displayName: e.target.value })
+                  }
+                />
+              </Field>
+              <Field label="Роль">
+                <select
+                  className="select"
+                  value={form.role}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      role: e.target.value as 'USER' | 'SUPERADMIN',
+                    })
+                  }
+                >
+                  <option value="USER">user</option>
+                  <option value="SUPERADMIN">super-admin</option>
+                </select>
+              </Field>
+            </div>
+            <div>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={creating}
+              >
+                {creating ? 'Создаём…' : 'Создать'}
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
 
       <div className="panel">
         {!data ? (

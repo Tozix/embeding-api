@@ -116,3 +116,46 @@ export function TopBars({
     </div>
   );
 }
+
+/** График CPU% (область) и RAM% (линия) за период — как в Grafana. SVG, без либ. */
+export function SystemChart({
+  points,
+}: {
+  points: { cpu: number; memUsed: number; memTotal: number }[];
+}) {
+  const W = 760;
+  const H = 180;
+  const pad = { l: 8, r: 8, t: 10, b: 12 };
+  const iw = W - pad.l - pad.r;
+  const ih = H - pad.t - pad.b;
+  if (points.length < 2) return <div className="empty">Сбор метрик…</div>;
+  const n = points.length;
+  const xy = (val: number, i: number) => {
+    const x = pad.l + (i / (n - 1)) * iw;
+    const y = pad.t + ih - (Math.max(0, Math.min(100, val)) / 100) * ih;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  };
+  const cpuPts = points.map((p, i) => xy(p.cpu, i)).join(' ');
+  const memPts = points
+    .map((p, i) => xy(p.memTotal ? (p.memUsed / p.memTotal) * 100 : 0, i))
+    .join(' ');
+  const cpuArea = `${pad.l},${pad.t + ih} ${cpuPts} ${pad.l + iw},${pad.t + ih}`;
+  return (
+    <svg className="chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+      {[0.25, 0.5, 0.75].map((f) => (
+        <line
+          key={f}
+          className="grid-line"
+          x1={pad.l}
+          x2={W - pad.r}
+          y1={pad.t + ih * f}
+          y2={pad.t + ih * f}
+          opacity={0.5}
+        />
+      ))}
+      <polygon points={cpuArea} fill="var(--accent)" opacity={0.12} />
+      <polyline points={cpuPts} fill="none" stroke="var(--accent)" strokeWidth={1.6} />
+      <polyline points={memPts} fill="none" stroke="var(--live)" strokeWidth={1.6} />
+    </svg>
+  );
+}

@@ -13,7 +13,15 @@ type Model = {
   isEnabled: boolean;
   createdAt: string;
   updatedAt: string;
+  loaded: boolean;
+  sizeBytes: number;
+  expiresAt: string | null;
 };
+
+function fmtSize(b: number): string {
+  if (!b) return '';
+  return b >= 1e9 ? `${(b / 1e9).toFixed(1)} ГБ` : `${Math.round(b / 1e6)} МБ`;
+}
 
 export function AdminModels() {
   const { toast } = useToast();
@@ -22,16 +30,21 @@ export function AdminModels() {
   const [kind, setKind] = useState<'EMBEDDING' | 'CHAT'>('CHAT');
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [memBusy, setMemBusy] = useState<string | null>(null);
 
-  const load = async () => {
+  // /admin/models/runtime отдаёт модели + их статус в памяти (Ollama /api/ps).
+  const fetchModels = async (silent = false) => {
     try {
-      setModels(await api<Model[]>('/admin/models'));
+      setModels(await api<Model[]>('/admin/models/runtime'));
     } catch {
-      toast('Не удалось загрузить модели', 'err');
+      if (!silent) toast('Не удалось загрузить модели', 'err');
     }
   };
+
   useEffect(() => {
-    void load();
+    void fetchModels();
+    const t = setInterval(() => void fetchModels(true), 3000); // real-time статус памяти
+    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -46,7 +59,7 @@ export function AdminModels() {
       });
       toast('Модель добавлена', 'ok');
       setOllamaName('');
-      await load();
+      await fetchModels();
     } catch (x) {
       toast(x instanceof ApiError ? x.message : 'Ошибка', 'err');
     } finally {
@@ -61,7 +74,7 @@ export function AdminModels() {
         method: 'POST',
       });
       toast(`Синхронизация: +${r.added.length} из ${r.total} в Ollama`, 'ok');
-      await load();
+      await fetchModels();
     } catch (x) {
       toast(x instanceof ApiError ? x.message : 'Ollama недоступна', 'err');
     } finally {
@@ -75,9 +88,26 @@ export function AdminModels() {
         method: 'PATCH',
         body: { isEnabled: !m.isEnabled },
       });
-      await load();
+      await fetchModels();
     } catch (x) {
       toast(x instanceof ApiError ? x.message : 'Ошибка', 'err');
+    }
+  };
+
+  // Загрузка/выгрузка модели в память (прогрев). Загрузка может занять время — блокируем кнопку.
+  const setMem = async (m: Model, action: 'load' | 'unload') => {
+    setMemBusy(m.id);
+    try {
+      await api(`/admin/models/${m.id}/${action}`, { method: 'POST' });
+      toast(
+        action === 'load' ? `${m.displayName}: загружена в память` : `${m.displayName}: выгружена`,
+        'ok',
+      );
+      await fetchModels();
+    } catch (x) {
+      toast(x instanceof ApiError ? x.message : 'Ошибка', 'err');
+    } finally {
+      setMemBusy(null);
     }
   };
 
@@ -86,7 +116,7 @@ export function AdminModels() {
     try {
       await api(`/admin/models/${m.id}`, { method: 'DELETE' });
       toast('Модель удалена', 'ok');
-      await load();
+      await fetchModels();
     } catch (x) {
       toast(x instanceof ApiError ? x.message : 'Ошибка', 'err');
     }
@@ -97,7 +127,10 @@ export function AdminModels() {
       <div className="page-head">
         <div>
           <h1>Модели</h1>
-          <p>Какие модели Ollama доступны через шлюз. Включённые видны всем одобренным ключам.</p>
+          <p>
+            Доступность через шлюз и управление памятью: загрузка/выгрузка моделей и live-статус
+            прогрева (обновляется каждые 3 с).
+          </p>
         </div>
         <button className="btn btn-ghost" disabled={busy} onClick={sync}>
           {busy ? <span className="spinner" /> : 'Синхронизировать с Ollama'}
@@ -146,17 +179,21 @@ export function AdminModels() {
               <thead>
                 <tr>
                   <th>Имя (OpenAI)</th>
-                  <th>Ollama</th>
                   <th>Тип</th>
                   <th>Доступность</th>
+                  <th>В памяти</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {models.map((m) => (
                   <tr key={m.id}>
-                    <td className="mono">{m.displayName}</td>
-                    <td className="mono muted">{m.ollamaName}</td>
+                    <td>
+                      <div className="mono">{m.displayName}</div>
+                      <div className="mono faint" style={{ fontSize: '0.76rem' }}>
+                        {m.ollamaName}
+                      </div>
+                    </td>
                     <td>
                       <span className="badge badge-neutral">{m.kind.toLowerCase()}</span>
                     </td>
@@ -165,7 +202,27 @@ export function AdminModels() {
                         {m.isEnabled ? 'включена' : 'выключена'}
                       </span>
                     </td>
+                    <td>
+                      {memBusy === m.id ? (
+                        <span className="badge badge-warn">
+                          <span className="spinner" /> прогрев…
+                        </span>
+                      ) : m.loaded ? (
+                        <span className="badge badge-ok">
+                          ● в памяти{m.sizeBytes ? ` · ${fmtSize(m.sizeBytes)}` : ''}
+                        </span>
+                      ) : (
+                        <span className="badge badge-neutral">○ выгружена</span>
+                      )}
+                    </td>
                     <td className="row-actions">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        disabled={memBusy === m.id}
+                        onClick={() => setMem(m, m.loaded ? 'unload' : 'load')}
+                      >
+                        {m.loaded ? 'Выгрузить' : 'Загрузить'}
+                      </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => toggle(m)}>
                         {m.isEnabled ? 'Выключить' : 'Включить'}
                       </button>
