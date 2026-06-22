@@ -12,8 +12,15 @@ type ModelOpt = { id: string; kind: 'CHAT' | 'EMBEDDING' };
 
 // Чат — это «контекст сессии», поэтому держим историю и выбор в sessionStorage:
 // переживает уход со страницы и обновление в рамках вкладки, чистится при её закрытии.
+// streaming=true означает, что прямо сейчас идёт генерация (возможно — в фоне, после
+// ухода со страницы): её писал send() в прошлом монтировании, а мы дочитываем поллингом.
 const STORE_KEY = 'chat-session:v1';
-type Saved = { messages: Msg[]; keyId: string; model: string };
+type Saved = { messages: Msg[]; keyId: string; model: string; streaming?: boolean };
+
+// Флаг живёт вне React: при уходе со страницы во время генерации компонент размонтируется,
+// но fetch-цикл send() продолжает работать и писать ответ в sessionStorage — ответ не
+// теряется. Флаг не даёт «фоновому» writer'у и «обычному» persist-эффекту перетирать друг друга.
+let streamActive = false;
 
 function loadSaved(): Saved | null {
   try {
@@ -21,6 +28,13 @@ function loadSaved(): Saved | null {
     return raw ? (JSON.parse(raw) as Saved) : null;
   } catch {
     return null;
+  }
+}
+function saveSession(s: Saved): void {
+  try {
+    sessionStorage.setItem(STORE_KEY, JSON.stringify(s));
+  } catch {
+    /* sessionStorage недоступен — не критично */
   }
 }
 
@@ -35,6 +49,7 @@ export function Chat() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0); // сек с момента отправки — для индикатора «думает»
+  const [resuming, setResuming] = useState(false); // вернулись во время фоновой генерации
   // Гидрация из sessionStorage — в эффекте (не в init), чтобы не разойтись с SSR-разметкой.
   const [hydrated, setHydrated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -53,16 +68,40 @@ export function Chat() {
       if (s.model) setModel(s.model);
     }
     setHydrated(true);
+
+    // Вернулись во время активной генерации (стрим идёт в фоне из прошлого монтирования) —
+    // дочитываем ответ из sessionStorage, пока он не допишется. Так ответ не «пропадает».
+    if (s?.streaming) {
+      setResuming(true);
+      const poll = setInterval(() => {
+        const cur = loadSaved();
+        if (!cur) {
+          clearInterval(poll);
+          setResuming(false);
+          return;
+        }
+        setMessages(cur.messages ?? []);
+        if (!cur.streaming) {
+          clearInterval(poll);
+          setResuming(false);
+        }
+      }, 300);
+      const stop = setTimeout(() => {
+        clearInterval(poll);
+        setResuming(false);
+      }, 300_000); // предохранитель: не поллим вечно
+      return () => {
+        clearInterval(poll);
+        clearTimeout(stop);
+      };
+    }
   }, []);
 
-  // Сохранение сессии (история + выбор) — только после гидрации, иначе перетрём пустым.
+  // Сохранение сессии (история + выбор). Во время стрима пишет send() (с флагом streaming),
+  // поэтому здесь пропускаем — иначе перетёрли бы прогресс/флаг фонового writer'а.
   useEffect(() => {
-    if (!hydrated) return;
-    try {
-      sessionStorage.setItem(STORE_KEY, JSON.stringify({ messages, keyId, model }));
-    } catch {
-      /* sessionStorage недоступен — не критично */
-    }
+    if (!hydrated || streamActive) return;
+    saveSession({ messages, keyId, model, streaming: false });
   }, [hydrated, messages, keyId, model]);
 
   useEffect(() => {
@@ -92,11 +131,6 @@ export function Chat() {
       .catch(() => setModels([]));
   }, [keyId]);
 
-  const patchLast = (patch: Partial<Msg>) =>
-    setMessages((ms) =>
-      ms.map((m, i) => (i === ms.length - 1 ? { ...m, ...patch } : m)),
-    );
-
   const send = async () => {
     const text = input.trim();
     if (!keyId) return toast('Выберите ключ', 'err');
@@ -104,9 +138,24 @@ export function Chat() {
     if (!text || busy) return;
 
     const history: Msg[] = [...messages, { role: 'user', content: text }];
-    setMessages([...history, { role: 'assistant', content: '' }]);
     setInput('');
     setBusy(true);
+    streamActive = true; // стрим теперь живёт независимо от монтирования компонента
+
+    // Единый writer: пишем и в UI (setMessages — no-op после размонтирования), и durable в
+    // sessionStorage. Второе продолжит работать, даже если уйти со страницы → ответ не теряется.
+    let lastSaveAt = 0;
+    const flush = (assistant: Msg, streaming: boolean, force = false) => {
+      const msgs = [...history, assistant];
+      setMessages(msgs);
+      const now = performance.now();
+      if (force || !streaming || now - lastSaveAt > 200) {
+        lastSaveAt = now;
+        saveSession({ messages: msgs, keyId, model, streaming });
+      }
+    };
+
+    flush({ role: 'assistant', content: '' }, true, true);
 
     const t0 = performance.now();
     setElapsed(0);
@@ -132,14 +181,14 @@ export function Chat() {
           };
           if (j.error) {
             acc += `\n⚠ ${j.error.message ?? ''}`;
-            patchLast({ content: acc });
+            flush({ role: 'assistant', content: acc }, true);
             return;
           }
           const delta = j.choices?.[0]?.delta?.content ?? '';
           if (delta) {
             if (!firstAt) firstAt = performance.now();
             acc += delta;
-            patchLast({ content: acc });
+            flush({ role: 'assistant', content: acc }, true);
           }
           if (j.usage?.completion_tokens) tokens = j.usage.completion_tokens;
         },
@@ -147,23 +196,29 @@ export function Chat() {
       const total = performance.now() - t0;
       const tps = tokens && total ? (tokens / (total / 1000)).toFixed(1) : null;
       const ttfb = firstAt ? Math.round(firstAt - t0) : null;
-      patchLast({
-        content: acc || '(пустой ответ)',
-        stats: [
-          tokens ? `${tokens} ток` : null,
-          `${(total / 1000).toFixed(1)} с`,
-          tps ? `${tps} ток/с` : null,
-          ttfb ? `TTFB ${ttfb} мс` : null,
-        ]
-          .filter(Boolean)
-          .join(' · '),
-      });
+      flush(
+        {
+          role: 'assistant',
+          content: acc || '(пустой ответ)',
+          stats: [
+            tokens ? `${tokens} ток` : null,
+            `${(total / 1000).toFixed(1)} с`,
+            tps ? `${tps} ток/с` : null,
+            ttfb ? `TTFB ${ttfb} мс` : null,
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        },
+        false,
+        true,
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Ошибка';
-      patchLast({ content: acc || `⚠ ${msg}` });
+      flush({ role: 'assistant', content: acc || `⚠ ${msg}` }, false, true);
       toast(msg, 'err');
     } finally {
       clearInterval(timer);
+      streamActive = false;
       setBusy(false);
     }
   };
@@ -272,18 +327,18 @@ export function Chat() {
                   {m.content ? (
                     <>
                       {m.content}
-                      {busy && i === messages.length - 1 && (
+                      {(busy || resuming) && i === messages.length - 1 && (
                         <span className="blink-cursor">▍</span>
                       )}
                     </>
-                  ) : busy && i === messages.length - 1 ? (
+                  ) : (busy || resuming) && i === messages.length - 1 ? (
                     <span className="thinking">
                       <span className="typing-dots">
                         <i />
                         <i />
                         <i />
                       </span>
-                      думает… {elapsed.toFixed(1)} с
+                      думает…{busy ? ` ${elapsed.toFixed(1)} с` : ''}
                     </span>
                   ) : (
                     ''
