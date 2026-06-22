@@ -1,4 +1,4 @@
-import { AdminModels } from '../../components/admin-models';
+import { AdminModels } from '../../../components/admin-models';
 
 export default async function ModelsPage() {
   return <AdminModels />;

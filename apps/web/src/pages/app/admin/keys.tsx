@@ -1,4 +1,4 @@
-import { AdminKeys } from '../../components/admin-keys';
+import { AdminKeys } from '../../../components/admin-keys';
 
 export default async function AdminKeysPage() {
   return <AdminKeys />;

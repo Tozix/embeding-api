@@ -1,4 +1,4 @@
-import { Dashboard } from '../../components/dashboard';
+import { Dashboard } from '../../../components/dashboard';
 
 export default async function AdminIndexPage() {
   return <Dashboard />;

@@ -1,4 +1,4 @@
-import { AdminUsers } from '../../components/admin-users';
+import { AdminUsers } from '../../../components/admin-users';
 
 export default async function UsersPage() {
   return <AdminUsers />;

@@ -9,11 +9,13 @@ const USER_NAV = [
   { to: '/app/chat', label: 'Чат с моделью' },
   { to: '/app/playground', label: 'Песочница' },
 ] as const;
+// Админка живёт под /app/admin/* — в одном SPA-неймспейсе /app/* (а НЕ на /admin/*, который
+// занят API). Так nginx остаётся простым path-роутингом без разбора Accept. См. infra/nginx.
 const ADMIN_NAV = [
-  { to: '/admin/dashboard', label: 'Дашборд нагрузки' },
-  { to: '/admin/users', label: 'Пользователи' },
-  { to: '/admin/keys', label: 'Ключи' },
-  { to: '/admin/models', label: 'Модели' },
+  { to: '/app/admin/dashboard', label: 'Дашборд нагрузки' },
+  { to: '/app/admin/users', label: 'Пользователи' },
+  { to: '/app/admin/keys', label: 'Ключи' },
+  { to: '/app/admin/models', label: 'Модели' },
 ] as const;
 
 function ThemeToggle() {
@@ -39,16 +41,13 @@ function ThemeToggle() {
   );
 }
 
-export function AppShell({
-  children,
-  requireAdmin = false,
-}: {
-  children: ReactNode;
-  requireAdmin?: boolean;
-}) {
+export function AppShell({ children }: { children: ReactNode }) {
   const { user, loading, isAdmin, logout } = useAuth();
   // Реактивный путь из роутера Waku — обновляется при client-side навигации (shell не перемонтируется).
   const { path } = useRouter();
+  // Админ-зона определяется по пути (/app/admin/*), а не отдельным лэйаутом — иначе был бы
+  // двойной AppShell. Не-админа уводим в кабинет; API всё равно закрыт RolesGuard.
+  const requireAdmin = path.startsWith('/app/admin');
   useEffect(() => {
     if (loading) return;
     if (!user) window.location.assign('/login');
