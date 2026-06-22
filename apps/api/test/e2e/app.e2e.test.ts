@@ -64,8 +64,16 @@ async function sse(path: string, body: unknown, token: string): Promise<string[]
     .map((l) => l.slice(6));
 }
 
+// Фейк отслеживает «загруженные в память» модели по keep_alive (0 = выгрузить).
+const loadedModels = new Set<string>();
+function track(model: string | undefined, keepAlive: unknown): void {
+  if (!model) return;
+  if (keepAlive === 0) loadedModels.delete(model);
+  else loadedModels.add(model);
+}
+
 /**
- * Фейковый Ollama: детерминированные /api/embed и /api/chat (NDJSON-стрим).
+ * Фейковый Ollama: детерминированные /api/embed, /api/chat (NDJSON), /api/generate, /api/ps.
  * Слушает порт из OLLAMA_BASE_URL (его задаёт scripts/test-e2e.sh ДО старта процесса),
  * чтобы ConfigService и фейк смотрели на один порт без гонки с beforeAll.
  */
@@ -78,15 +86,40 @@ function startFakeOllama() {
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === '/api/embed') {
-        const b = (await req.json()) as { input: string | string[] };
+        const b = (await req.json()) as {
+          model?: string;
+          input: string | string[];
+          keep_alive?: unknown;
+        };
+        track(b.model, b.keep_alive);
         const inputs = Array.isArray(b.input) ? b.input : [b.input];
         return Response.json({
           embeddings: inputs.map(() => [0.11, 0.22, 0.33, 0.44]),
           prompt_eval_count: 5,
         });
       }
+      if (url.pathname === '/api/generate') {
+        const b = (await req.json()) as { model?: string; keep_alive?: unknown };
+        track(b.model, b.keep_alive);
+        return Response.json({ model: b.model ?? 'fake', response: '', done: true });
+      }
+      if (url.pathname === '/api/ps') {
+        return Response.json({
+          models: [...loadedModels].map((name) => ({
+            name,
+            size: 123_000_000,
+            size_vram: 0,
+            expires_at: '2099-01-01T00:00:00Z',
+          })),
+        });
+      }
       if (url.pathname === '/api/chat') {
-        const b = (await req.json()) as { stream?: boolean };
+        const b = (await req.json()) as {
+          model?: string;
+          stream?: boolean;
+          keep_alive?: unknown;
+        };
+        track(b.model, b.keep_alive);
         if (b.stream === false) {
           return Response.json({
             model: 'fake',
@@ -314,4 +347,104 @@ test('ротация refresh + reuse-detection: старый токен посл
   // повторное использование СТАРОГО refresh → reuse-инцидент → 401
   const reuse = await http('/auth/refresh', { method: 'POST', cookie: refreshA });
   expect(reuse.status).toBe(401);
+});
+
+// ---------- новые admin-фичи ----------
+
+test('#3 супер-админ создаёт пользователя → 201 (email нормализован), можно войти', async () => {
+  const r = await http('/admin/users', {
+    method: 'POST',
+    token: adminToken,
+    body: {
+      email: 'Made@Admin.io',
+      password: 'password123',
+      role: 'USER',
+      displayName: 'Создан',
+    },
+  });
+  expect(r.status).toBe(201);
+  expect(r.body.email).toBe('made@admin.io');
+  expect(r.body.role).toBe('USER');
+  const login = await http('/auth/login', {
+    method: 'POST',
+    body: { email: 'made@admin.io', password: 'password123' },
+  });
+  expect(login.status).toBe(200);
+});
+
+test('#3 дубликат email при создании → 409', async () => {
+  const r = await http('/admin/users', {
+    method: 'POST',
+    token: adminToken,
+    body: { email: 'made@admin.io', password: 'password123' },
+  });
+  expect(r.status).toBe(409);
+});
+
+test('#2 создание второго супер-админа → у него есть доступ к /admin', async () => {
+  const r = await http('/admin/users', {
+    method: 'POST',
+    token: adminToken,
+    body: { email: 'admin2@test.io', password: 'password123', role: 'SUPERADMIN' },
+  });
+  expect(r.status).toBe(201);
+  const login = await http('/auth/login', {
+    method: 'POST',
+    body: { email: 'admin2@test.io', password: 'password123' },
+  });
+  const access = await http('/admin/users', { token: login.body.accessToken });
+  expect(access.status).toBe(200);
+});
+
+test('#1 супер-админ выпускает себе ключ → сразу APPROVED', async () => {
+  const r = await http('/keys', {
+    method: 'POST',
+    token: adminToken,
+    body: { name: 'admin self key' },
+  });
+  expect(r.status).toBe(201);
+  expect(r.body.status).toBe('APPROVED');
+  expect(r.body.key).toContain('sk-emb-');
+});
+
+test('#4 load/unload модели в память + runtime-статус', async () => {
+  const runtime = await http('/admin/models/runtime', { token: adminToken });
+  expect(runtime.status).toBe(200);
+  const chat = runtime.body.find(
+    (m: { ollamaName: string }) => m.ollamaName === 'fake-chat',
+  );
+  expect(chat).toBeTruthy();
+
+  const load = await http(`/admin/models/${chat.id}/load`, {
+    method: 'POST',
+    token: adminToken,
+  });
+  expect(load.status).toBe(200);
+  const after = await http('/admin/models/runtime', { token: adminToken });
+  const loaded = after.body.find((m: { id: string }) => m.id === chat.id);
+  expect(loaded.loaded).toBe(true);
+  expect(loaded.sizeBytes).toBeGreaterThan(0);
+
+  const unload = await http(`/admin/models/${chat.id}/unload`, {
+    method: 'POST',
+    token: adminToken,
+  });
+  expect(unload.status).toBe(200);
+  const after2 = await http('/admin/models/runtime', { token: adminToken });
+  const unloaded = after2.body.find((m: { id: string }) => m.id === chat.id);
+  expect(unloaded.loaded).toBe(false);
+});
+
+test('#6 метрики хоста (CPU/RAM) → cpuCount/current/history', async () => {
+  const r = await http('/admin/analytics/system', { token: adminToken });
+  expect(r.status).toBe(200);
+  expect(r.body.cpuCount).toBeGreaterThan(0);
+  expect(r.body.current.memTotal).toBeGreaterThan(0);
+  expect(typeof r.body.current.cpu).toBe('number');
+  expect(Array.isArray(r.body.history)).toBe(true);
+});
+
+test('USER на /admin/models/runtime → 403', async () => {
+  const r = await http('/admin/models/runtime', { token: userToken });
+  expect(r.status).toBe(403);
 });

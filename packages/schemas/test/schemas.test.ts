@@ -2,6 +2,23 @@ import { expect, test } from 'bun:test';
 import { LoginSchema, RegisterSchema } from '../src/auth/index';
 import { EmbeddingsRequestSchema } from '../src/openai/embeddings';
 import { ChatCompletionRequestSchema } from '../src/openai/chat';
+import { AdminCreateUserSchema } from '../src/admin/index';
+
+test('AdminCreateUserSchema: нормализация email, дефолт роли USER, минимум пароля', () => {
+  const r = AdminCreateUserSchema.parse({ email: ' Boss@X.COM ', password: 'password123' });
+  expect(r.email).toBe('boss@x.com');
+  expect(r.role).toBe('USER');
+  expect(
+    AdminCreateUserSchema.safeParse({ email: 'a@b.co', password: 'short' }).success,
+  ).toBe(false);
+  expect(
+    AdminCreateUserSchema.safeParse({
+      email: 'a@b.co',
+      password: 'password123',
+      role: 'SUPERADMIN',
+    }).data?.role,
+  ).toBe('SUPERADMIN');
+});
 
 test('email нормализуется (trim + lowercase)', () => {
   const r = RegisterSchema.parse({
