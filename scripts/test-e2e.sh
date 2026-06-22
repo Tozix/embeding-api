@@ -26,7 +26,8 @@ echo "→ миграции…"
 
 # ENV для приложения (Ollama указываем в заведомо мёртвый порт — проверяем путь 502)
 export REDIS_HOST=127.0.0.1 REDIS_PORT="$RD_PORT"
-export OLLAMA_BASE_URL="http://127.0.0.1:59999" OLLAMA_TIMEOUT_MS=3000
+# e2e запускает фейковый Ollama на ЭТОМ порту (см. app.e2e.test.ts) — единый источник правды
+export OLLAMA_BASE_URL="http://127.0.0.1:18434" OLLAMA_TIMEOUT_MS=5000
 export JWT_ACCESS_SECRET=e2e-access-secret-0123456789
 export JWT_REFRESH_SECRET=e2e-refresh-secret-0123456789
 export APIKEY_HMAC_SECRET=e2e-apikey-hmac-secret-0123456789-xyz

@@ -5,11 +5,10 @@ import {
   HttpCode,
   Param,
   Post,
-  Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 import {
   ChatCompletionRequestSchema,
   EmbeddingsRequestSchema,
@@ -60,7 +59,6 @@ export class OpenAiController {
     @CurrentApiKey() key: ApiKeyContext,
     @Body(new ZodValidationPipe(ChatCompletionRequestSchema))
     dto: ChatCompletionRequest,
-    @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
     if (!dto.stream) {
@@ -77,18 +75,23 @@ export class OpenAiController {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
-    req.on('close', () => abort.abort());
+    // Обрыв клиента ловим по 'close' ОТВЕТА (res), а не запроса (req): для POST req-поток
+    // завершается body-parser'ом сразу, из-за чего req.on('close')/req.destroyed давали ложный
+    // мгновенный abort и стрим выдавал только [DONE].
+    res.on('close', () => {
+      if (!res.writableEnded) abort.abort();
+    });
 
     try {
       for await (const chunk of stream) {
-        if (res.writableEnded || req.destroyed) break;
+        if (res.writableEnded || abort.signal.aborted) break;
         res.write(`data: ${JSON.stringify(chunk)}\n\n`);
       }
       if (!res.writableEnded) res.write('data: [DONE]\n\n');
     } catch (e) {
       // Клиентский обрыв (abort) — в мёртвый сокет писать нельзя и незачем.
       // Иначе — ошибка upstream/парсинга: отдаём её событием в уже открытом потоке.
-      if (!res.writableEnded && !req.destroyed && !abort.signal.aborted) {
+      if (!res.writableEnded && !abort.signal.aborted) {
         res.write(this.streamErrorEvent(e));
       }
     } finally {
