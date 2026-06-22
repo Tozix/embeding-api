@@ -1,0 +1,24 @@
+{
+  "name": "@embeding/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "waku dev",
+    "build": "waku build",
+    "start": "waku start",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"(lint: TODO — eslint)\""
+  },
+  "dependencies": {
+    "@embeding/schemas": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "waku": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.3"
+  }
+}
