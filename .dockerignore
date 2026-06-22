@@ -6,3 +6,4 @@
 .env
 **/*.log
 .vscode
+models

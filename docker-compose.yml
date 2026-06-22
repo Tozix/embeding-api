@@ -35,8 +35,11 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    environment:
+      # модели хранятся в bind-mount ./models на хосте → переживают пересборку/удаление контейнера
+      OLLAMA_MODELS: /models
     volumes:
-      - ollama:/root/.ollama
+      - ./models:/models
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     # GPU (NVIDIA): раскомментировать + установить nvidia-container-toolkit
@@ -107,4 +110,3 @@ services:
 volumes:
   pgdata:
   redis:
-  ollama:

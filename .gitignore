@@ -152,3 +152,5 @@ vite.config.ts.timestamp-*
 **/pages.gen.ts
 # Bun
 .bun/
+# Ollama models (bind-mount на хост)
+/models/

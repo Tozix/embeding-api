@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Link } from 'waku';
+import { Link, useRouter } from 'waku';
 import { useAuth } from '../lib/auth';
 
 const USER_NAV = [{ to: '/app/keys', label: 'Мои API-ключи' }] as const;
@@ -43,8 +43,8 @@ export function AppShell({
   requireAdmin?: boolean;
 }) {
   const { user, loading, isAdmin, logout } = useAuth();
-  const [path, setPath] = useState('');
-  useEffect(() => setPath(window.location.pathname), []);
+  // Реактивный путь из роутера Waku — обновляется при client-side навигации (shell не перемонтируется).
+  const { path } = useRouter();
   useEffect(() => {
     if (loading) return;
     if (!user) window.location.assign('/login');
