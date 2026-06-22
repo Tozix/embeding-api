@@ -1,0 +1,149 @@
+// Prisma v7. Сгенерировать клиент: `bun run db:generate`.
+// Новый генератор `prisma-client` пишет ESM-клиент в указанный output (gitignored).
+// Импорт клиента в коде — через единый реэкспорт src/prisma/client.ts.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma v7: URL подключения вынесен в prisma.config.ts (миграции) и в driver adapter (runtime).
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  SUPERADMIN
+}
+
+enum ApiKeyStatus {
+  PENDING // создан пользователем, ждёт одобрения
+  APPROVED // одобрен супер-админом — ТОЛЬКО в этом статусе ключ работает
+  REVOKED // отозван
+}
+
+enum ModelKind {
+  EMBEDDING
+  CHAT
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String?
+  role         Role     @default(USER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  apiKeys       ApiKey[]
+  refreshTokens RefreshToken[]
+  modelAccess   ModelAccess[] // персональные разрешения на модели (выдаёт супер-админ)
+  usageRecords  UsageRecord[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  tokenHash String    @unique // храним только хэш refresh-токена
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model ApiKey {
+  id         String       @id @default(cuid())
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  name       String // человеко-читаемая метка
+  keyPrefix  String // первые символы для отображения, напр. "sk-emb-ab12…"
+  keyHash    String       @unique // хэш полного ключа; сам ключ показывается один раз
+  status     ApiKeyStatus @default(PENDING)
+  approvedBy String? // userId супер-админа, одобрившего ключ
+  approvedAt DateTime?
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  allowedModels ApiKeyModel[] // ограничение ключа моделями; пусто = все globally enabled
+  usageRecords  UsageRecord[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("api_keys")
+}
+
+model Model {
+  id          String    @id @default(cuid())
+  ollamaName  String    @unique // имя модели в Ollama, напр. "nomic-embed-text"
+  displayName String    @unique // имя в OpenAI API (по умолчанию = ollamaName); уникально для детерминированного резолва /v1/*
+  kind        ModelKind @default(CHAT)
+  isEnabled   Boolean   @default(false) // globally enabled — доступна всем одобренным ключам
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  apiKeyModels ApiKeyModel[]
+  userAccess   ModelAccess[]
+
+  @@map("models")
+}
+
+// M2M: ограничение конкретного ключа конкретными моделями
+model ApiKeyModel {
+  apiKey   ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  apiKeyId String
+  model    Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  modelId  String
+
+  @@id([apiKeyId, modelId])
+  @@map("api_key_models")
+}
+
+// Лог каждого вызова /v1/* — основа аналитики/мониторинга нагрузки.
+// userId/apiKeyId через SetNull: история переживает удаление пользователя/ключа.
+model UsageRecord {
+  id               String   @id @default(cuid())
+  userId           String?
+  apiKeyId         String?
+  modelName        String // displayName модели на момент запроса
+  endpoint         String // 'embeddings' | 'chat'
+  stream           Boolean  @default(false)
+  status           Int // HTTP-статус ответа
+  ok               Boolean // успех инференса
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  latencyMs        Int      @default(0) // время инференса (без ожидания в очереди)
+  queueWaitMs      Int      @default(0) // ожидание в очереди
+  createdAt        DateTime @default(now())
+
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([modelName, createdAt])
+  @@map("usage_records")
+}
+
+// Персональный доступ пользователя к модели (выдаёт супер-админ)
+model ModelAccess {
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  model     Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  modelId   String
+  grantedAt DateTime @default(now())
+
+  @@id([userId, modelId])
+  @@map("model_access")
+}

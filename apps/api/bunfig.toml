@@ -1,0 +1,3 @@
+# Выполняется до старта приложения. Нужен, чтобы отключить нативный msgpackr-extract
+# (крашит Bun) до загрузки BullMQ. Работает при запуске с cwd=apps/api (как turbo и Docker).
+preload = ["./bun-preload.ts"]
