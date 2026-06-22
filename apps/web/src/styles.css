@@ -661,6 +661,57 @@ table.tbl {
   }
 }
 
+/* Индикатор «модель думает»: три пульсирующие точки + подпись */
+.thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--text-muted);
+}
+.typing-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.typing-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: typing-bounce 1.2s infinite ease-in-out both;
+}
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
+/* Мигающий курсор во время стрима ответа */
+.blink-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--accent);
+  font-weight: 600;
+  animation: blink 1s step-start infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .toast-host {
   position: fixed;
   bottom: 1.25rem;

@@ -34,6 +34,7 @@ export function Chat() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0); // сек с момента отправки — для индикатора «думает»
   // Гидрация из sessionStorage — в эффекте (не в init), чтобы не разойтись с SSR-разметкой.
   const [hydrated, setHydrated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -108,6 +109,9 @@ export function Chat() {
     setBusy(true);
 
     const t0 = performance.now();
+    setElapsed(0);
+    // тикаем счётчик, пока ждём/стримим — на CPU «думанье» (processing) может быть долгим
+    const timer = setInterval(() => setElapsed((performance.now() - t0) / 1000), 100);
     let firstAt = 0;
     let acc = '';
     let tokens = 0;
@@ -159,6 +163,7 @@ export function Chat() {
       patchLast({ content: acc || `⚠ ${msg}` });
       toast(msg, 'err');
     } finally {
+      clearInterval(timer);
       setBusy(false);
     }
   };
@@ -264,7 +269,25 @@ export function Chat() {
                     lineHeight: 1.55,
                   }}
                 >
-                  {m.content || (busy && i === messages.length - 1 ? <span className="spinner" /> : '')}
+                  {m.content ? (
+                    <>
+                      {m.content}
+                      {busy && i === messages.length - 1 && (
+                        <span className="blink-cursor">▍</span>
+                      )}
+                    </>
+                  ) : busy && i === messages.length - 1 ? (
+                    <span className="thinking">
+                      <span className="typing-dots">
+                        <i />
+                        <i />
+                        <i />
+                      </span>
+                      думает… {elapsed.toFixed(1)} с
+                    </span>
+                  ) : (
+                    ''
+                  )}
                 </div>
                 {m.stats && (
                   <div className="faint mono" style={{ fontSize: '0.72rem', marginTop: '0.3rem' }}>
