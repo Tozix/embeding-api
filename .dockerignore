@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/.turbo
+**/src/generated
+.git
+.env
+**/*.log
+.vscode

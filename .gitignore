@@ -141,3 +141,14 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# --- monorepo / project-specific ---
+# Turborepo cache
+.turbo/
+# Сгенерированный Prisma-клиент (Prisma v7, генератор prisma-client)
+**/src/generated/
+# Waku build output + сгенерированные типы роутов
+**/dist/
+**/pages.gen.ts
+# Bun
+.bun/

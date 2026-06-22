@@ -1,0 +1,31 @@
+{
+  "name": "embeding-api",
+  "version": "0.0.1",
+  "private": true,
+  "description": "OpenAI-совместимый шлюз к Ollama (эмбеддинги + локальные модели) с управлением пользователями и API-ключами",
+  "packageManager": "bun@1.3.5",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "db:generate": "turbo run db:generate --filter=@embeding/api",
+    "db:migrate": "turbo run db:migrate --filter=@embeding/api",
+    "db:seed": "turbo run db:seed --filter=@embeding/api",
+    "docker:up": "docker compose --env-file .env -f infra/docker/docker-compose.yml up -d --build",
+    "docker:down": "docker compose --env-file .env -f infra/docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "turbo": "^2.5.5",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}
