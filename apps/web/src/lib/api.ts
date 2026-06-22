@@ -6,6 +6,9 @@ const BASE = (
     ?.WAKU_PUBLIC_API_URL ?? ''
 ).replace(/\/$/, '');
 
+/** База API (пусто = same-origin за nginx). Нужна, напр., для ссылки на /reference (Swagger). */
+export const API_BASE = BASE;
+
 let accessToken: string | null = null;
 export function setAccessToken(token: string | null): void {
   accessToken = token;

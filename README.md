@@ -3,6 +3,22 @@
 OpenAI-совместимый шлюз к [Ollama](https://ollama.com) для эмбеддингов и других локальных моделей,
 с регистрацией пользователей, супер-админом и модерацией API-ключей.
 
+## Возможности
+
+- **Drop-in OpenAI API** — `/v1/embeddings`, `/v1/chat/completions` (+ SSE-стриминг), `/v1/models`.
+  Работает с любым OpenAI SDK: меняете только `base_url` и ключ.
+- **Кабинет и ключи** — регистрация, выпуск API-ключей; ключ **не работает**, пока супер-админ
+  не одобрит его (`pending → approved`).
+- **Админка** — управление пользователями, модерация ключей, модели (sync из Ollama), realtime-дашборд нагрузки.
+- **Очередь инференса** (BullMQ) — бережёт CPU-only сервер: чат строго по одному, эмбеддинги — пачкой.
+- **Публичная документация** — гайд `/docs` и интерактивный Swagger `/reference`.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="https://llm.korateam.ru/v1", api_key="sk-emb-...")
+client.embeddings.create(model="nomic-embed-text", input="привет, мир")
+```
+
 > **Важно:** см. [CLAUDE.md](CLAUDE.md) — там зафиксированы архитектура, конвенции и два приоритетных
 > правила репозитория (использование context7 и правило общения на русском).
 
@@ -19,9 +35,16 @@ apps/
 packages/
   schemas/    Общие Zod-схемы и типы (контракты OpenAI + auth)
 infra/
-  docker/     Dockerfile + docker-compose (ollama + postgres + api)
-  nginx/      Пример конфига для хостового nginx
+  docker/     Dockerfile'ы api/web + корневой docker-compose (postgres + redis + ollama + api + web)
+  nginx/      Конфиги для хостового nginx (пример + боевой llm.korateam.ru)
 ```
+
+## Документация и API
+
+- **Публичный гайд** — страница `/docs` на фронте: быстрый старт, аутентификация, примеры на
+  curl / Python / JS.
+- **Интерактивный Swagger** — `/reference` (спека `/openapi.json`), сгенерированная из тех же
+  Zod-схем, с примерами запросов и ответов.
 
 ## Быстрый старт (локально)
 

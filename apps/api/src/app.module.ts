@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnv } from './config/env';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthController } from './health/health.controller';
+import { DocsController } from './docs/docs.controller';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { QueueConnectionModule } from './queue/queue-connection.module';
 import { AuthModule } from './auth/auth.module';
@@ -23,7 +24,7 @@ import { UsageModule } from './usage/usage.module';
     AdminModule, // /admin/* (импортирует Auth + ApiKeys + Ollama)
     UsageModule, // /admin/analytics/* (метрики + live SSE)
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, DocsController],
   providers: [
     // Единственный глобальный фильтр: OpenAI-конверт для /v1/*, обычный JSON — для остального.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

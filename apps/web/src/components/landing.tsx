@@ -30,6 +30,9 @@ export function Landing() {
           <span>embeding</span>
         </div>
         <div className="row gap-1">
+          <Link to="/docs" className="btn btn-ghost btn-sm">
+            Документация
+          </Link>
           <Link to="/login" className="btn btn-ghost btn-sm">
             Войти
           </Link>
