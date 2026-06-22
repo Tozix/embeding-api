@@ -10,6 +10,20 @@ type Msg = { role: 'user' | 'assistant'; content: string; stats?: string };
 type KeyOpt = { id: string; name: string; keyPrefix: string };
 type ModelOpt = { id: string; kind: 'CHAT' | 'EMBEDDING' };
 
+// Чат — это «контекст сессии», поэтому держим историю и выбор в sessionStorage:
+// переживает уход со страницы и обновление в рамках вкладки, чистится при её закрытии.
+const STORE_KEY = 'chat-session:v1';
+type Saved = { messages: Msg[]; keyId: string; model: string };
+
+function loadSaved(): Saved | null {
+  try {
+    const raw = sessionStorage.getItem(STORE_KEY);
+    return raw ? (JSON.parse(raw) as Saved) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function Chat() {
   const { toast } = useToast();
   const [keys, setKeys] = useState<KeyOpt[]>([]);
@@ -20,6 +34,8 @@ export function Chat() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // Гидрация из sessionStorage — в эффекте (не в init), чтобы не разойтись с SSR-разметкой.
+  const [hydrated, setHydrated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -27,12 +43,34 @@ export function Chat() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Восстановление сохранённой сессии чата при входе на страницу.
+  useEffect(() => {
+    const s = loadSaved();
+    if (s) {
+      if (Array.isArray(s.messages)) setMessages(s.messages);
+      if (s.keyId) setKeyId(s.keyId);
+      if (s.model) setModel(s.model);
+    }
+    setHydrated(true);
+  }, []);
+
+  // Сохранение сессии (история + выбор) — только после гидрации, иначе перетрём пустым.
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      sessionStorage.setItem(STORE_KEY, JSON.stringify({ messages, keyId, model }));
+    } catch {
+      /* sessionStorage недоступен — не критично */
+    }
+  }, [hydrated, messages, keyId, model]);
+
   useEffect(() => {
     void api<KeyOpt[]>('/me/playground/keys')
       .then((ks) => {
         setKeys(ks);
         setKeysErr(false);
-        if (ks[0]) setKeyId(ks[0].id);
+        // сохраняем восстановленный выбор, если он ещё валиден; иначе — первый ключ
+        setKeyId((cur) => (cur && ks.some((k) => k.id === cur) ? cur : (ks[0]?.id ?? '')));
       })
       .catch(() => setKeysErr(true)); // не маскируем сбой запроса под «нет ключей»
   }, []);
@@ -47,7 +85,8 @@ export function Chat() {
       .then((all) => {
         const chat = all.filter((m) => m.kind === 'CHAT').map((m) => m.id);
         setModels(chat);
-        setModel(chat[0] ?? '');
+        // сохраняем восстановленную модель, если она доступна ключу; иначе — первую
+        setModel((cur) => (cur && chat.includes(cur) ? cur : (chat[0] ?? '')));
       })
       .catch(() => setModels([]));
   }, [keyId]);
