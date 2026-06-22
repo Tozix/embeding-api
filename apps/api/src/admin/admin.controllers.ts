@@ -8,10 +8,8 @@ import {
   Patch,
   Post,
   Query,
-  Res,
   UseGuards,
 } from '@nestjs/common';
-import type { Response } from 'express';
 import {
   AdminCreateKeySchema,
   AdminCreateUserSchema,
@@ -156,34 +154,15 @@ export class AdminModelsController {
     return this.models.unload(id);
   }
 
-  /** Скачать модель в Ollama со стримингом прогресса (SSE). Ошибки до заголовков → обычный HTTP. */
+  /**
+   * Запустить фоновую закачку модели в Ollama. Возвращает сразу — закачка идёт на сервере и
+   * переживает уход клиента со страницы; прогресс читается из GET /admin/models/runtime (поле pull).
+   * Идемпотентно: повторный вызов во время закачки не дублирует её.
+   */
   @Post(':id/pull')
-  async pull(@Param('id') id: string, @Res() res: Response): Promise<void> {
-    const stream = await this.models.pullStream(id); // 404 (модели нет) / 502 (Ollama down) до заголовков
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-    try {
-      for await (const p of stream) {
-        if (res.writableEnded) break;
-        res.write(`data: ${JSON.stringify(p)}\n\n`);
-        // Ollama сообщает об ошибке строкой потока — не пишем success после неё.
-        if (p && typeof p === 'object' && 'error' in p && p.error) {
-          if (!res.writableEnded) res.end();
-          return;
-        }
-      }
-      if (!res.writableEnded) res.write('data: {"status":"success","done":true}\n\n');
-    } catch (e) {
-      if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({ error: e instanceof Error ? e.message : 'Ошибка скачивания' })}\n\n`,
-        );
-      }
-    } finally {
-      if (!res.writableEnded) res.end();
-    }
+  @HttpCode(202)
+  pull(@Param('id') id: string) {
+    return this.models.startPull(id); // 404, если модель не зарегистрирована
   }
 
   @Post()

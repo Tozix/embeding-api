@@ -506,24 +506,49 @@ test('#playground: ключи юзера + модели с kind + embeddings + c
   expect(text).toBe('Раз, два, три');
 });
 
-test('#pull: SSE-прогресс скачивания + финальный success', async () => {
+test('#pull: фоновая закачка → прогресс в runtime, финальный success', async () => {
   const m = await http('/admin/models', {
     method: 'POST',
     token: adminToken,
     body: { ollamaName: 'topull-model', kind: 'CHAT', isEnabled: false },
   });
-  const events = await sse(`/admin/models/${m.body.id}/pull`, {}, adminToken);
-  const statuses = events
-    .map((e) => {
-      try {
-        return JSON.parse(e).status as string;
-      } catch {
-        return '';
-      }
-    })
-    .filter(Boolean);
-  expect(statuses).toContain('pulling manifest');
-  expect(statuses).toContain('success');
+  // Запуск отвечает сразу (202) — закачка идёт фоном на сервере и переживает уход клиента.
+  const start = await http(`/admin/models/${m.body.id}/pull`, {
+    method: 'POST',
+    token: adminToken,
+  });
+  expect(start.status).toBe(202);
+  expect(start.body.started).toBe(true);
+
+  // Прогресс читается из runtime() (как это делает фронт-поллинг) — ждём терминального состояния.
+  let pull: { status: string; pct: number; done: boolean; error?: string } | null = null;
+  for (let i = 0; i < 50; i++) {
+    const rt = await http('/admin/models/runtime', { token: adminToken });
+    const row = (rt.body as { id: string; pull: typeof pull }[]).find(
+      (x) => x.id === m.body.id,
+    );
+    pull = row?.pull ?? null;
+    if (pull?.done) break;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  expect(pull?.done).toBe(true);
+  expect(pull?.error).toBeUndefined();
+  expect(pull?.status).toBe('success');
+  expect(pull?.pct).toBe(100);
+});
+
+test('#pull: повторный запуск во время закачки не дублирует (идемпотентность)', async () => {
+  const m = await http('/admin/models', {
+    method: 'POST',
+    token: adminToken,
+    body: { ollamaName: 'topull-twice', kind: 'CHAT', isEnabled: false },
+  });
+  const [a, b] = await Promise.all([
+    http(`/admin/models/${m.body.id}/pull`, { method: 'POST', token: adminToken }),
+    http(`/admin/models/${m.body.id}/pull`, { method: 'POST', token: adminToken }),
+  ]);
+  // Ровно один из двойных кликов реально стартует закачку, второй — no-op.
+  expect([a.body.started, b.body.started].filter(Boolean).length).toBeLessThanOrEqual(1);
 });
 
 test('#graceful: load не скачанной модели → 404 model_not_pulled', async () => {

@@ -13,6 +13,7 @@ type ModelOpt = { id: string; kind: 'CHAT' | 'EMBEDDING' };
 export function Chat() {
   const { toast } = useToast();
   const [keys, setKeys] = useState<KeyOpt[]>([]);
+  const [keysErr, setKeysErr] = useState(false);
   const [keyId, setKeyId] = useState('');
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState('');
@@ -30,9 +31,10 @@ export function Chat() {
     void api<KeyOpt[]>('/me/playground/keys')
       .then((ks) => {
         setKeys(ks);
+        setKeysErr(false);
         if (ks[0]) setKeyId(ks[0].id);
       })
-      .catch(() => {});
+      .catch(() => setKeysErr(true)); // не маскируем сбой запроса под «нет ключей»
   }, []);
 
   // модели ключа — только CHAT (в чат нельзя слать embedding-модели)
@@ -150,7 +152,12 @@ export function Chat() {
 
       <div className="panel">
         <div className="panel-body row gap-2 wrap" style={{ alignItems: 'flex-end' }}>
-          {keys.length === 0 ? (
+          {keysErr ? (
+            <p className="muted">
+              Не удалось загрузить ключи — обновите страницу. Если повторяется, возможно, API
+              устарел (нужно пересобрать).
+            </p>
+          ) : keys.length === 0 ? (
             <p className="muted">
               Нет одобренных ключей.{' '}
               <Link to="/app/keys" className="link">

@@ -6,7 +6,7 @@ import {
 import type { CreateModelInput, UpdateModelInput } from '@embeding/schemas/admin';
 import { PrismaService } from '../prisma/prisma.service';
 import { ModelKind, Prisma } from '../prisma/client';
-import { OllamaService, type PullProgress } from '../ollama/ollama.service';
+import { OllamaService } from '../ollama/ollama.service';
 
 type DbModel = {
   id: string;
@@ -17,6 +17,16 @@ type DbModel = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+/** Прогресс фоновой закачки модели — живёт на сервере, переживает уход клиента со страницы. */
+export type PullView = {
+  status: string;
+  pct: number;
+  done: boolean;
+  error?: string;
+};
+
+type PullState = PullView & { finishedAt: number | null };
 
 export type AdminModelDto = {
   id: string;
@@ -47,6 +57,13 @@ function safeDisplayName(name: string): string {
 
 @Injectable()
 export class AdminModelsService {
+  // Прогресс закачек по modelId. Закачка идёт фоном на сервере (не на клиентском
+  // соединении), поэтому переживает навигацию/сворачивание вкладки. Фронт читает прогресс
+  // через runtime()-поллинг — а не держит SSE-стрим, который рвётся при уходе со страницы.
+  private readonly pulls = new Map<string, PullState>();
+  // Сколько держать терминальное (done/error) состояние, чтобы поллинг успел его показать.
+  private static readonly DONE_TTL_MS = 15_000;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly ollama: OllamaService,
@@ -73,18 +90,69 @@ export class AdminModelsService {
     return { ok: true };
   }
 
-  /** Скачать модель в Ollama (со стримингом прогресса). 404, если модель не зарегистрирована. */
-  async pullStream(id: string): Promise<AsyncGenerator<PullProgress>> {
+  /**
+   * Запустить фоновую закачку модели в Ollama. Идемпотентно: если закачка уже идёт — не дублирует.
+   * Возвращает сразу; прогресс читается через runtime(). 404, если модель не зарегистрирована.
+   */
+  async startPull(id: string): Promise<{ started: boolean }> {
     const model = await this.requireModel(id);
-    return this.ollama.openPull(model.ollamaName);
+    const cur = this.pulls.get(id);
+    if (cur && !cur.done) return { started: false }; // уже качается
+    this.pulls.set(id, { status: 'старт…', pct: 0, done: false, finishedAt: null });
+    void this.runPull(id, model.ollamaName); // fire-and-forget: живёт независимо от запроса
+    return { started: true };
   }
 
-  /** Рантайм-статус: какие зарегистрированные модели сейчас в памяти (Ollama /api/ps). */
+  /** Фоновый цикл закачки: читает прогресс Ollama и пишет его в this.pulls. */
+  private async runPull(id: string, ollamaName: string): Promise<void> {
+    try {
+      const stream = await this.ollama.openPull(ollamaName);
+      for await (const p of stream) {
+        if (p.error) {
+          this.finishPull(id, this.pulls.get(id)?.pct ?? 0, 'ошибка', p.error);
+          return; // Ollama сообщила об ошибке строкой потока — не помечаем success
+        }
+        const total = p.total ?? 0;
+        const completed = p.completed ?? 0;
+        // На стадиях без total (verifying sha256 / writing manifest) держим прошлый %, не роняем в 0.
+        const pct = total
+          ? Math.round((completed / total) * 100)
+          : (this.pulls.get(id)?.pct ?? 0);
+        this.pulls.set(id, { status: p.status ?? '', pct, done: false, finishedAt: null });
+      }
+      this.finishPull(id, 100, 'success');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Ошибка скачивания';
+      this.finishPull(id, this.pulls.get(id)?.pct ?? 0, 'ошибка', msg);
+    }
+  }
+
+  private finishPull(id: string, pct: number, status: string, error?: string): void {
+    this.pulls.set(id, { status, pct, done: true, error, finishedAt: Date.now() });
+  }
+
+  /** Состояние закачки для UI; протухшие терминальные состояния подчищает. */
+  private pullView(id: string): PullView | null {
+    const p = this.pulls.get(id);
+    if (!p) return null;
+    if (
+      p.done &&
+      p.finishedAt &&
+      Date.now() - p.finishedAt > AdminModelsService.DONE_TTL_MS
+    ) {
+      this.pulls.delete(id);
+      return null;
+    }
+    return { status: p.status, pct: p.pct, done: p.done, error: p.error };
+  }
+
+  /** Рантайм-статус: что сейчас в памяти (Ollama /api/ps) + прогресс фоновых закачек. */
   async runtime(): Promise<
     (AdminModelDto & {
       loaded: boolean;
       sizeBytes: number;
       expiresAt: string | null;
+      pull: PullView | null;
     })[]
   > {
     const [models, running] = await Promise.all([
@@ -101,6 +169,7 @@ export class AdminModelsService {
         loaded: Boolean(r),
         sizeBytes: r?.sizeBytes ?? 0,
         expiresAt: r?.expiresAt ?? null,
+        pull: this.pullView(m.id),
       };
     });
   }

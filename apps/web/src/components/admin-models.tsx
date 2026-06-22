@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, streamPost } from '../lib/api';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { api, ApiError } from '../lib/api';
 import { useToast } from './toast';
 import { EmptyState, Spinner } from './ui';
+
+type Pull = { status: string; pct: number; done: boolean; error?: string };
 
 type Model = {
   id: string;
@@ -16,6 +18,8 @@ type Model = {
   loaded: boolean;
   sizeBytes: number;
   expiresAt: string | null;
+  // Прогресс фоновой закачки приходит с сервера (переживает уход со страницы); null — не качается.
+  pull: Pull | null;
 };
 
 function fmtSize(b: number): string {
@@ -31,11 +35,10 @@ export function AdminModels() {
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [memBusy, setMemBusy] = useState<string | null>(null);
-  const [pulling, setPulling] = useState<
-    Record<string, { status: string; pct: number }>
-  >({});
+  // Какие закачки были активны на прошлом поллинге — чтобы тостить ровно один раз при завершении.
+  const prevActive = useRef<Record<string, boolean>>({});
 
-  // /admin/models/runtime отдаёт модели + их статус в памяти (Ollama /api/ps).
+  // /admin/models/runtime отдаёт модели + статус в памяти (Ollama /api/ps) + прогресс закачек.
   const fetchModels = async (silent = false) => {
     try {
       setModels(await api<Model[]>('/admin/models/runtime'));
@@ -46,10 +49,26 @@ export function AdminModels() {
 
   useEffect(() => {
     void fetchModels();
-    const t = setInterval(() => void fetchModels(true), 3000); // real-time статус памяти
+    const t = setInterval(() => void fetchModels(true), 3000); // real-time статус памяти + закачек
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Закачка идёт на сервере — ловим переход «активна → завершилась» по серверному прогрессу.
+  useEffect(() => {
+    if (!models) return;
+    const next: Record<string, boolean> = {};
+    for (const m of models) {
+      const active = !!m.pull && !m.pull.done;
+      next[m.id] = active;
+      if (prevActive.current[m.id] && !active) {
+        if (m.pull?.error) toast(`Скачивание ${m.displayName}: ${m.pull.error}`, 'err');
+        else toast(`${m.displayName}: скачана`, 'ok');
+      }
+    }
+    prevActive.current = next;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [models]);
 
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -97,40 +116,18 @@ export function AdminModels() {
     }
   };
 
-  // Скачивание модели в Ollama со стримингом прогресса (для моделей, которых ещё нет локально).
+  // Запускаем закачку фоном на сервере — она переживает уход со страницы. Прогресс берётся
+  // из runtime-поллинга (m.pull), поэтому при возврате на страницу он восстановится сам.
   const pull = async (m: Model) => {
-    if (pulling[m.id]) return;
-    setPulling((p) => ({ ...p, [m.id]: { status: 'старт…', pct: 0 } }));
-    let failed = false;
+    if (m.pull && !m.pull.done) return; // уже качается
     try {
-      await streamPost(`/admin/models/${m.id}/pull`, {}, (data) => {
-        const d = data as {
-          status?: string;
-          total?: number;
-          completed?: number;
-          error?: string;
-        };
-        if (d.error) {
-          failed = true;
-          toast(`Скачивание: ${d.error}`, 'err');
-          return;
-        }
-        const pct =
-          d.total && d.completed ? Math.round((d.completed / d.total) * 100) : 0;
-        setPulling((p) => ({ ...p, [m.id]: { status: d.status ?? '', pct } }));
+      const r = await api<{ started: boolean }>(`/admin/models/${m.id}/pull`, {
+        method: 'POST',
       });
-      if (!failed) {
-        toast(`${m.displayName}: скачана`, 'ok');
-        await fetchModels();
-      }
+      toast(r.started ? `${m.displayName}: скачивание запущено` : 'Закачка уже идёт', 'ok');
+      await fetchModels(); // сразу подтянуть начальный статус (старт…)
     } catch (x) {
       toast(x instanceof ApiError ? x.message : 'Ошибка скачивания', 'err');
-    } finally {
-      setPulling((p) => {
-        const c = { ...p };
-        delete c[m.id];
-        return c;
-      });
     }
   };
 
@@ -243,10 +240,9 @@ export function AdminModels() {
                       </span>
                     </td>
                     <td>
-                      {pulling[m.id] ? (
+                      {m.pull && !m.pull.done ? (
                         <span className="badge badge-warn">
-                          ↓ {pulling[m.id]?.pct ?? 0}%{' '}
-                          {(pulling[m.id]?.status ?? '').slice(0, 16)}
+                          ↓ {m.pull.pct}% {m.pull.status.slice(0, 16)}
                         </span>
                       ) : memBusy === m.id ? (
                         <span className="badge badge-warn">
@@ -263,14 +259,14 @@ export function AdminModels() {
                     <td className="row-actions">
                       <button
                         className="btn btn-ghost btn-sm"
-                        disabled={!!pulling[m.id]}
+                        disabled={!!(m.pull && !m.pull.done)}
                         onClick={() => pull(m)}
                       >
-                        {pulling[m.id] ? `↓ ${pulling[m.id]?.pct ?? 0}%` : 'Скачать'}
+                        {m.pull && !m.pull.done ? `↓ ${m.pull.pct}%` : 'Скачать'}
                       </button>
                       <button
                         className="btn btn-ghost btn-sm"
-                        disabled={memBusy === m.id || !!pulling[m.id]}
+                        disabled={memBusy === m.id || !!(m.pull && !m.pull.done)}
                         onClick={() => setMem(m, m.loaded ? 'unload' : 'load')}
                       >
                         {m.loaded ? 'Выгрузить' : 'Загрузить'}

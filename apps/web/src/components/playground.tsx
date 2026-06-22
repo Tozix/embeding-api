@@ -26,6 +26,7 @@ const EXAMPLES: Record<Mode, string[]> = {
 export function Playground() {
   const { toast } = useToast();
   const [keys, setKeys] = useState<KeyOpt[]>([]);
+  const [keysErr, setKeysErr] = useState(false);
   const [keyId, setKeyId] = useState('');
   const [allModels, setAllModels] = useState<ModelOpt[]>([]);
   const [model, setModel] = useState('');
@@ -38,9 +39,10 @@ export function Playground() {
     void api<KeyOpt[]>('/me/playground/keys')
       .then((ks) => {
         setKeys(ks);
+        setKeysErr(false);
         if (ks[0]) setKeyId(ks[0].id);
       })
-      .catch(() => {});
+      .catch(() => setKeysErr(true)); // не маскируем сбой запроса под «нет ключей»
   }, []);
 
   useEffect(() => {
@@ -127,7 +129,12 @@ export function Playground() {
       {/* ключ + модель */}
       <div className="panel">
         <div className="panel-body stack gap-2">
-          {keys.length === 0 ? (
+          {keysErr ? (
+            <p className="muted">
+              Не удалось загрузить ключи — обновите страницу. Если повторяется, возможно, API
+              устарел (нужно пересобрать).
+            </p>
+          ) : keys.length === 0 ? (
             <p className="muted">
               Нет одобренных ключей.{' '}
               <Link to="/app/keys" className="link">
