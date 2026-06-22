@@ -269,6 +269,14 @@ export class OpenAiService {
     };
   }
 
+  /** Доступные ключу модели с типом — для песочницы/чата (фильтрация по kind на фронте). */
+  async availableModels(
+    key: ApiKeyContext,
+  ): Promise<{ id: string; kind: ModelKind }[]> {
+    const models = await this.visibleModels(key);
+    return models.map((m) => ({ id: m.displayName, kind: m.kind }));
+  }
+
   async retrieveModel(
     displayName: string,
     key: ApiKeyContext,

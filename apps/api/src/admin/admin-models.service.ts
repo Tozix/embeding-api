@@ -6,7 +6,7 @@ import {
 import type { CreateModelInput, UpdateModelInput } from '@embeding/schemas/admin';
 import { PrismaService } from '../prisma/prisma.service';
 import { ModelKind, Prisma } from '../prisma/client';
-import { OllamaService } from '../ollama/ollama.service';
+import { OllamaService, type PullProgress } from '../ollama/ollama.service';
 
 type DbModel = {
   id: string;
@@ -71,6 +71,12 @@ export class AdminModelsService {
     const model = await this.requireModel(id);
     await this.ollama.unloadModel(model.ollamaName, model.kind);
     return { ok: true };
+  }
+
+  /** Скачать модель в Ollama (со стримингом прогресса). 404, если модель не зарегистрирована. */
+  async pullStream(id: string): Promise<AsyncGenerator<PullProgress>> {
+    const model = await this.requireModel(id);
+    return this.ollama.openPull(model.ollamaName);
   }
 
   /** Рантайм-статус: какие зарегистрированные модели сейчас в памяти (Ollama /api/ps). */

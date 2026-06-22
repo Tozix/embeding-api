@@ -1,11 +1,14 @@
 'use client';
 
-import { useState } from 'react';
-import { API_BASE } from '../lib/api';
+import { useEffect, useState } from 'react';
+import { Link } from 'waku';
+import { api, ApiError, streamPost } from '../lib/api';
 import { useToast } from './toast';
 import { Field } from './ui';
 
 type Mode = 'chat' | 'embeddings';
+type KeyOpt = { id: string; name: string; keyPrefix: string };
+type ModelOpt = { id: string; kind: 'CHAT' | 'EMBEDDING' };
 
 const EXAMPLES: Record<Mode, string[]> = {
   chat: [
@@ -22,43 +25,57 @@ const EXAMPLES: Record<Mode, string[]> = {
 
 export function Playground() {
   const { toast } = useToast();
-  const [apiKey, setApiKey] = useState('');
-  const [models, setModels] = useState<string[]>([]);
+  const [keys, setKeys] = useState<KeyOpt[]>([]);
+  const [keyId, setKeyId] = useState('');
+  const [allModels, setAllModels] = useState<ModelOpt[]>([]);
   const [model, setModel] = useState('');
   const [mode, setMode] = useState<Mode>('chat');
   const [input, setInput] = useState(EXAMPLES.chat[0] ?? '');
   const [output, setOutput] = useState('');
   const [running, setRunning] = useState(false);
 
-  const auth = () => ({ authorization: `Bearer ${apiKey.trim()}` });
+  useEffect(() => {
+    void api<KeyOpt[]>('/me/playground/keys')
+      .then((ks) => {
+        setKeys(ks);
+        if (ks[0]) setKeyId(ks[0].id);
+      })
+      .catch(() => {});
+  }, []);
 
-  const loadModels = async () => {
-    if (!apiKey.trim()) return toast('Вставьте API-ключ', 'err');
-    try {
-      const res = await fetch(`${API_BASE}/v1/models`, { headers: auth() });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message ?? `Ошибка ${res.status}`);
-      const ids: string[] = (data.data ?? []).map((m: { id: string }) => m.id);
-      setModels(ids);
-      if (ids[0]) setModel(ids[0]);
-      toast(ids.length ? `Доступно моделей: ${ids.length}` : 'Нет доступных моделей', ids.length ? 'ok' : 'err');
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Ошибка', 'err');
-    }
-  };
-
-  const runEmbeddings = async () => {
-    const res = await fetch(`${API_BASE}/v1/embeddings`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...auth() },
-      body: JSON.stringify({ model, input }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setOutput(JSON.stringify(data, null, 2));
+  useEffect(() => {
+    if (!keyId) {
+      setAllModels([]);
       return;
     }
-    const v: number[] = data.data[0].embedding;
+    void api<ModelOpt[]>(`/me/playground/keys/${keyId}/models`)
+      .then(setAllModels)
+      .catch(() => setAllModels([]));
+  }, [keyId]);
+
+  // модели текущего режима (чат → только CHAT, эмбеддинги → только EMBEDDING)
+  const models = allModels.filter((m) =>
+    mode === 'chat' ? m.kind === 'CHAT' : m.kind === 'EMBEDDING',
+  );
+
+  useEffect(() => {
+    if (models.length && !models.some((m) => m.id === model)) {
+      setModel(models[0]!.id);
+    } else if (!models.length) {
+      setModel('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, allModels]);
+
+  const runEmbeddings = async () => {
+    const data = await api<{
+      data: { embedding: number[] }[];
+      usage: unknown;
+    }>(`/me/playground/keys/${keyId}/embeddings`, {
+      method: 'POST',
+      body: { model, input },
+    });
+    const v = data.data[0]!.embedding;
     setOutput(
       `✓ вектор размерности ${v.length}\n\n[${v
         .slice(0, 8)
@@ -69,62 +86,30 @@ export function Playground() {
 
   const runChat = async () => {
     setOutput('');
-    const res = await fetch(`${API_BASE}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...auth() },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: input }],
-        stream: true,
-      }),
-    });
-    if (!res.ok || !res.body) {
-      const d = await res.json().catch(() => ({}));
-      setOutput(JSON.stringify(d, null, 2));
-      return;
-    }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
     let acc = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        const line = frame.split('\n').find((l) => l.startsWith('data:'));
-        if (!line) continue;
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') continue;
-        try {
-          const j = JSON.parse(payload) as {
-            choices?: { delta?: { content?: string } }[];
-            error?: { message?: string };
-          };
-          if (j.error) {
-            acc += `\n[ошибка] ${j.error.message ?? ''}`;
-          } else {
-            acc += j.choices?.[0]?.delta?.content ?? '';
-          }
-          setOutput(acc);
-        } catch {
-          /* skip */
-        }
-      }
-    }
+    await streamPost(
+      `/me/playground/keys/${keyId}/chat`,
+      { model, messages: [{ role: 'user', content: input }], stream: true },
+      (data) => {
+        const j = data as {
+          choices?: { delta?: { content?: string } }[];
+          error?: { message?: string };
+        };
+        if (j.error) acc += `\n[ошибка] ${j.error.message ?? ''}`;
+        else acc += j.choices?.[0]?.delta?.content ?? '';
+        setOutput(acc);
+      },
+    );
   };
 
   const run = async () => {
-    if (!apiKey.trim()) return toast('Вставьте API-ключ', 'err');
-    if (!model) return toast('Выберите модель (нажмите «Загрузить модели»)', 'err');
+    if (!keyId) return toast('Выберите ключ', 'err');
+    if (!model) return toast('Нет доступной модели для этого режима', 'err');
     setRunning(true);
     try {
       await (mode === 'embeddings' ? runEmbeddings() : runChat());
     } catch (e) {
-      toast(e instanceof Error ? e.message : 'Ошибка', 'err');
+      toast(e instanceof ApiError ? e.message : 'Ошибка', 'err');
     } finally {
       setRunning(false);
     }
@@ -135,49 +120,52 @@ export function Playground() {
       <div className="page-head">
         <div>
           <h1>Песочница</h1>
-          <p>
-            Тестовые запросы к моделям вашим API-ключом. Ключ остаётся в браузере и шлётся
-            прямо в <span className="mono">/v1/*</span>.
-          </p>
+          <p>Тестовые запросы к моделям одним из ваших одобренных ключей — эмбеддинги и чат.</p>
         </div>
       </div>
 
-      {/* ключ + модели */}
+      {/* ключ + модель */}
       <div className="panel">
         <div className="panel-body stack gap-2">
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <Field label="API-ключ (sk-emb-…)">
-              <input
-                className="input mono"
-                style={{ minWidth: 320 }}
-                placeholder="sk-emb-…"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-            </Field>
-            <button className="btn btn-ghost" onClick={loadModels}>
-              Загрузить модели
-            </button>
-            {models.length > 0 && (
+          {keys.length === 0 ? (
+            <p className="muted">
+              Нет одобренных ключей.{' '}
+              <Link to="/app/keys" className="link">
+                Создайте ключ
+              </Link>{' '}
+              и дождитесь одобрения супер-админом.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <Field label="Ключ">
+                <select className="select" value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+                  {keys.map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.name} ({k.keyPrefix})
+                    </option>
+                  ))}
+                </select>
+              </Field>
               <Field label="Модель">
                 <select
                   className="select"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
+                  disabled={models.length === 0}
                 >
-                  {models.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
+                  {models.length === 0 ? (
+                    <option value="">нет {mode === 'chat' ? 'chat' : 'embedding'}-моделей</option>
+                  ) : (
+                    models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id}
+                      </option>
+                    ))
+                  )}
                 </select>
               </Field>
-            )}
-          </div>
-          <p className="faint" style={{ fontSize: '0.8rem' }}>
-            Ключ нужен <b>одобренный</b>. Сырой ключ показывается один раз при создании — если
-            потеряли, выпустите новый в разделе «Мои API-ключи».
-          </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -203,11 +191,7 @@ export function Playground() {
         <div className="panel-body stack gap-2">
           <div className="row gap-1" style={{ flexWrap: 'wrap' }}>
             {EXAMPLES[mode].map((ex) => (
-              <button
-                key={ex}
-                className="btn btn-ghost btn-sm"
-                onClick={() => setInput(ex)}
-              >
+              <button key={ex} className="btn btn-ghost btn-sm" onClick={() => setInput(ex)}>
                 {ex.length > 28 ? ex.slice(0, 28) + '…' : ex}
               </button>
             ))}
@@ -220,14 +204,13 @@ export function Playground() {
             placeholder={mode === 'chat' ? 'Ваше сообщение…' : 'Текст для эмбеддинга…'}
           />
           <div>
-            <button className="btn btn-primary" onClick={run} disabled={running}>
+            <button className="btn btn-primary" onClick={run} disabled={running || !model}>
               {running ? 'Выполняется…' : 'Выполнить ▸'}
             </button>
           </div>
         </div>
       </div>
 
-      {/* вывод */}
       {output && (
         <div className="panel">
           <div className="panel-head">

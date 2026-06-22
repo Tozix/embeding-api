@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError } from '../lib/api';
+import { api, ApiError, streamPost } from '../lib/api';
 import { useToast } from './toast';
 import { EmptyState, Spinner } from './ui';
 
@@ -31,6 +31,9 @@ export function AdminModels() {
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [memBusy, setMemBusy] = useState<string | null>(null);
+  const [pulling, setPulling] = useState<
+    Record<string, { status: string; pct: number }>
+  >({});
 
   // /admin/models/runtime отдаёт модели + их статус в памяти (Ollama /api/ps).
   const fetchModels = async (silent = false) => {
@@ -91,6 +94,43 @@ export function AdminModels() {
       await fetchModels();
     } catch (x) {
       toast(x instanceof ApiError ? x.message : 'Ошибка', 'err');
+    }
+  };
+
+  // Скачивание модели в Ollama со стримингом прогресса (для моделей, которых ещё нет локально).
+  const pull = async (m: Model) => {
+    if (pulling[m.id]) return;
+    setPulling((p) => ({ ...p, [m.id]: { status: 'старт…', pct: 0 } }));
+    let failed = false;
+    try {
+      await streamPost(`/admin/models/${m.id}/pull`, {}, (data) => {
+        const d = data as {
+          status?: string;
+          total?: number;
+          completed?: number;
+          error?: string;
+        };
+        if (d.error) {
+          failed = true;
+          toast(`Скачивание: ${d.error}`, 'err');
+          return;
+        }
+        const pct =
+          d.total && d.completed ? Math.round((d.completed / d.total) * 100) : 0;
+        setPulling((p) => ({ ...p, [m.id]: { status: d.status ?? '', pct } }));
+      });
+      if (!failed) {
+        toast(`${m.displayName}: скачана`, 'ok');
+        await fetchModels();
+      }
+    } catch (x) {
+      toast(x instanceof ApiError ? x.message : 'Ошибка скачивания', 'err');
+    } finally {
+      setPulling((p) => {
+        const c = { ...p };
+        delete c[m.id];
+        return c;
+      });
     }
   };
 
@@ -203,7 +243,12 @@ export function AdminModels() {
                       </span>
                     </td>
                     <td>
-                      {memBusy === m.id ? (
+                      {pulling[m.id] ? (
+                        <span className="badge badge-warn">
+                          ↓ {pulling[m.id]?.pct ?? 0}%{' '}
+                          {(pulling[m.id]?.status ?? '').slice(0, 16)}
+                        </span>
+                      ) : memBusy === m.id ? (
                         <span className="badge badge-warn">
                           <span className="spinner" /> прогрев…
                         </span>
@@ -218,7 +263,14 @@ export function AdminModels() {
                     <td className="row-actions">
                       <button
                         className="btn btn-ghost btn-sm"
-                        disabled={memBusy === m.id}
+                        disabled={!!pulling[m.id]}
+                        onClick={() => pull(m)}
+                      >
+                        {pulling[m.id] ? `↓ ${pulling[m.id]?.pct ?? 0}%` : 'Скачать'}
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        disabled={memBusy === m.id || !!pulling[m.id]}
                         onClick={() => setMem(m, m.loaded ? 'unload' : 'load')}
                       >
                         {m.loaded ? 'Выгрузить' : 'Загрузить'}

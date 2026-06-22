@@ -100,8 +100,33 @@ function startFakeOllama() {
       }
       if (url.pathname === '/api/generate') {
         const b = (await req.json()) as { model?: string; keep_alive?: unknown };
+        // «ghost»-модель имитирует «не скачана» (для проверки graceful-ошибки)
+        if (b.model?.includes('ghost')) {
+          return Response.json(
+            { error: `model "${b.model}" not found, try pulling it first` },
+            { status: 404 },
+          );
+        }
         track(b.model, b.keep_alive);
         return Response.json({ model: b.model ?? 'fake', response: '', done: true });
+      }
+      if (url.pathname === '/api/pull') {
+        const enc = new TextEncoder();
+        const lines = [
+          { status: 'pulling manifest' },
+          { status: 'downloading', total: 100, completed: 40 },
+          { status: 'downloading', total: 100, completed: 100 },
+          { status: 'success' },
+        ];
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              for (const l of lines) c.enqueue(enc.encode(JSON.stringify(l) + '\n'));
+              c.close();
+            },
+          }),
+          { headers: { 'content-type': 'application/x-ndjson' } },
+        );
       }
       if (url.pathname === '/api/ps') {
         return Response.json({
@@ -447,4 +472,70 @@ test('#6 метрики хоста (CPU/RAM) → cpuCount/current/history', asyn
 test('USER на /admin/models/runtime → 403', async () => {
   const r = await http('/admin/models/runtime', { token: userToken });
   expect(r.status).toBe(403);
+});
+
+test('#playground: ключи юзера + модели с kind + embeddings + chat (по JWT)', async () => {
+  const keys = await http('/me/playground/keys', { token: userToken });
+  expect(keys.status).toBe(200);
+  expect(keys.body.length).toBeGreaterThanOrEqual(1);
+  const kid = keys.body[0].id;
+
+  const models = await http(`/me/playground/keys/${kid}/models`, { token: userToken });
+  expect(models.status).toBe(200);
+  expect(models.body.some((m: { kind: string }) => m.kind === 'EMBEDDING')).toBe(true);
+  expect(models.body.some((m: { kind: string }) => m.kind === 'CHAT')).toBe(true);
+
+  const emb = await http(`/me/playground/keys/${kid}/embeddings`, {
+    method: 'POST',
+    token: userToken,
+    body: { model: 'nomic-embed-text', input: 'привет' },
+  });
+  expect(emb.status).toBe(200);
+  expect(emb.body.data[0].embedding).toHaveLength(4);
+
+  const chat = await sse(
+    `/me/playground/keys/${kid}/chat`,
+    { model: 'fake-chat', messages: [{ role: 'user', content: 'hi' }], stream: true },
+    userToken,
+  );
+  expect(chat.at(-1)).toBe('[DONE]');
+  const text = chat
+    .filter((e) => e !== '[DONE]')
+    .map((e) => JSON.parse(e).choices?.[0]?.delta?.content ?? '')
+    .join('');
+  expect(text).toBe('Раз, два, три');
+});
+
+test('#pull: SSE-прогресс скачивания + финальный success', async () => {
+  const m = await http('/admin/models', {
+    method: 'POST',
+    token: adminToken,
+    body: { ollamaName: 'topull-model', kind: 'CHAT', isEnabled: false },
+  });
+  const events = await sse(`/admin/models/${m.body.id}/pull`, {}, adminToken);
+  const statuses = events
+    .map((e) => {
+      try {
+        return JSON.parse(e).status as string;
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean);
+  expect(statuses).toContain('pulling manifest');
+  expect(statuses).toContain('success');
+});
+
+test('#graceful: load не скачанной модели → 404 model_not_pulled', async () => {
+  const m = await http('/admin/models', {
+    method: 'POST',
+    token: adminToken,
+    body: { ollamaName: 'ghost:latest', kind: 'CHAT', isEnabled: false },
+  });
+  const load = await http(`/admin/models/${m.body.id}/load`, {
+    method: 'POST',
+    token: adminToken,
+  });
+  expect(load.status).toBe(404);
+  expect(load.body.error.code).toBe('model_not_pulled');
 });

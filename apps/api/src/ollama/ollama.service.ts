@@ -21,6 +21,14 @@ export type OllamaChatChunk = {
   eval_count?: number;
 };
 
+export type PullProgress = {
+  status: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+  error?: string;
+};
+
 type OllamaEmbedResponse = {
   embeddings?: number[][];
   prompt_eval_count?: number;
@@ -172,6 +180,13 @@ export class OllamaService {
     }));
   }
 
+  /** Скачивание модели (Ollama /api/pull) со стримингом прогресса. Без таймаута — может идти долго. */
+  async openPull(name: string): Promise<AsyncGenerator<PullProgress>> {
+    const res = await this.connect('/api/pull', { name, stream: true });
+    if (!res.body) throw openAiErrors.upstream('Ollama не вернул поток');
+    return parseNdjson<PullProgress>(res.body);
+  }
+
   private post(
     path: string,
     body: unknown,
@@ -248,21 +263,34 @@ export class OllamaService {
   }
 
   private mapUpstreamError(status: number, text: string): OpenAiHttpException {
-    const message = text || `Ollama ответил статусом ${status}`;
-    if (status === 404) {
+    // Ollama отвечает телом вида {"error":"model \"x\" not found, try pulling it first"} —
+    // разворачиваем вложенный JSON в человекочитаемое сообщение, не отдаём сырую строку.
+    let detail = text || `Ollama ответил статусом ${status}`;
+    try {
+      const j = JSON.parse(text) as { error?: string };
+      if (j?.error) detail = j.error;
+    } catch {
+      /* не JSON — оставляем как есть */
+    }
+    const notPulled = /not found|try pulling|no such model|file does not exist/i.test(
+      detail,
+    );
+    if (notPulled || status === 404) {
       return new OpenAiHttpException(404, {
-        message,
+        message: notPulled
+          ? `Модель не скачана в Ollama — сначала скачайте её («Скачать»/pull). [${detail}]`
+          : detail,
         type: 'invalid_request_error',
-        code: 'model_not_found',
+        code: notPulled ? 'model_not_pulled' : 'model_not_found',
         param: 'model',
       });
     }
     if (status < 500) {
       return new OpenAiHttpException(400, {
-        message,
+        message: detail,
         type: 'invalid_request_error',
       });
     }
-    return openAiErrors.upstream(message);
+    return openAiErrors.upstream(detail);
   }
 }

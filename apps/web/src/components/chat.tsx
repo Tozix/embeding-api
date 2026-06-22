@@ -1,15 +1,19 @@
 'use client';
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { API_BASE } from '../lib/api';
+import { Link } from 'waku';
+import { api, streamPost } from '../lib/api';
 import { useToast } from './toast';
 import { Field } from './ui';
 
 type Msg = { role: 'user' | 'assistant'; content: string; stats?: string };
+type KeyOpt = { id: string; name: string; keyPrefix: string };
+type ModelOpt = { id: string; kind: 'CHAT' | 'EMBEDDING' };
 
 export function Chat() {
   const { toast } = useToast();
-  const [apiKey, setApiKey] = useState('');
+  const [keys, setKeys] = useState<KeyOpt[]>([]);
+  const [keyId, setKeyId] = useState('');
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState('');
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -22,22 +26,29 @@ export function Chat() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  const loadModels = async () => {
-    if (!apiKey.trim()) return toast('Вставьте API-ключ', 'err');
-    try {
-      const res = await fetch(`${API_BASE}/v1/models`, {
-        headers: { authorization: `Bearer ${apiKey.trim()}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message ?? `Ошибка ${res.status}`);
-      const ids: string[] = (data.data ?? []).map((m: { id: string }) => m.id);
-      setModels(ids);
-      if (ids[0]) setModel(ids[0]);
-      toast(ids.length ? `Доступно моделей: ${ids.length}` : 'Нет моделей', ids.length ? 'ok' : 'err');
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Ошибка', 'err');
+  useEffect(() => {
+    void api<KeyOpt[]>('/me/playground/keys')
+      .then((ks) => {
+        setKeys(ks);
+        if (ks[0]) setKeyId(ks[0].id);
+      })
+      .catch(() => {});
+  }, []);
+
+  // модели ключа — только CHAT (в чат нельзя слать embedding-модели)
+  useEffect(() => {
+    if (!keyId) {
+      setModels([]);
+      return;
     }
-  };
+    void api<ModelOpt[]>(`/me/playground/keys/${keyId}/models`)
+      .then((all) => {
+        const chat = all.filter((m) => m.kind === 'CHAT').map((m) => m.id);
+        setModels(chat);
+        setModel(chat[0] ?? '');
+      })
+      .catch(() => setModels([]));
+  }, [keyId]);
 
   const patchLast = (patch: Partial<Msg>) =>
     setMessages((ms) =>
@@ -46,8 +57,8 @@ export function Chat() {
 
   const send = async () => {
     const text = input.trim();
-    if (!apiKey.trim()) return toast('Вставьте API-ключ', 'err');
-    if (!model) return toast('Загрузите модели и выберите', 'err');
+    if (!keyId) return toast('Выберите ключ', 'err');
+    if (!model) return toast('Нет доступной chat-модели', 'err');
     if (!text || busy) return;
 
     const history: Msg[] = [...messages, { role: 'user', content: text }];
@@ -60,52 +71,34 @@ export function Chat() {
     let acc = '';
     let tokens = 0;
     try {
-      const res = await fetch(`${API_BASE}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey.trim()}` },
-        body: JSON.stringify({
+      await streamPost(
+        `/me/playground/keys/${keyId}/chat`,
+        {
           model,
           messages: history.map((m) => ({ role: m.role, content: m.content })),
           stream: true,
           stream_options: { include_usage: true },
-        }),
-      });
-      if (!res.ok || !res.body) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d?.error?.message ?? `Ошибка ${res.status}`);
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const line = frame.split('\n').find((l) => l.startsWith('data:'));
-          if (!line) continue;
-          const payload = line.slice(5).trim();
-          if (payload === '[DONE]') continue;
-          try {
-            const j = JSON.parse(payload) as {
-              choices?: { delta?: { content?: string } }[];
-              usage?: { completion_tokens?: number };
-            };
-            const delta = j.choices?.[0]?.delta?.content ?? '';
-            if (delta) {
-              if (!firstAt) firstAt = performance.now();
-              acc += delta;
-              patchLast({ content: acc });
-            }
-            if (j.usage?.completion_tokens) tokens = j.usage.completion_tokens;
-          } catch {
-            /* skip */
+        },
+        (data) => {
+          const j = data as {
+            choices?: { delta?: { content?: string } }[];
+            usage?: { completion_tokens?: number };
+            error?: { message?: string };
+          };
+          if (j.error) {
+            acc += `\n⚠ ${j.error.message ?? ''}`;
+            patchLast({ content: acc });
+            return;
           }
-        }
-      }
+          const delta = j.choices?.[0]?.delta?.content ?? '';
+          if (delta) {
+            if (!firstAt) firstAt = performance.now();
+            acc += delta;
+            patchLast({ content: acc });
+          }
+          if (j.usage?.completion_tokens) tokens = j.usage.completion_tokens;
+        },
+      );
       const total = performance.now() - t0;
       const tps = tokens && total ? (tokens / (total / 1000)).toFixed(1) : null;
       const ttfb = firstAt ? Math.round(firstAt - t0) : null;
@@ -137,7 +130,10 @@ export function Chat() {
   };
 
   return (
-    <div className="page stack gap-3" style={{ height: 'calc(100dvh - 57px)', display: 'flex', flexDirection: 'column' }}>
+    <div
+      className="page stack gap-3"
+      style={{ height: 'calc(100dvh - 57px)', display: 'flex', flexDirection: 'column' }}
+    >
       <div className="page-head">
         <div>
           <h1>Чат с моделью</h1>
@@ -152,36 +148,50 @@ export function Chat() {
         </button>
       </div>
 
-      {/* настройки */}
       <div className="panel">
         <div className="panel-body row gap-2 wrap" style={{ alignItems: 'flex-end' }}>
-          <Field label="API-ключ (sk-emb-…)">
-            <input
-              className="input mono"
-              style={{ minWidth: 300 }}
-              placeholder="sk-emb-…"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-          </Field>
-          <button className="btn btn-ghost" onClick={loadModels}>
-            Загрузить модели
-          </button>
-          {models.length > 0 && (
-            <Field label="Модель">
-              <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
-                {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </Field>
+          {keys.length === 0 ? (
+            <p className="muted">
+              Нет одобренных ключей.{' '}
+              <Link to="/app/keys" className="link">
+                Создайте ключ
+              </Link>
+              .
+            </p>
+          ) : (
+            <>
+              <Field label="Ключ">
+                <select className="select" value={keyId} onChange={(e) => setKeyId(e.target.value)}>
+                  {keys.map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.name} ({k.keyPrefix})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Модель (chat)">
+                <select
+                  className="select"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={models.length === 0}
+                >
+                  {models.length === 0 ? (
+                    <option value="">нет chat-моделей</option>
+                  ) : (
+                    models.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </Field>
+            </>
           )}
         </div>
       </div>
 
-      {/* диалог */}
       <div className="panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div
           ref={scrollRef}
@@ -220,7 +230,6 @@ export function Chat() {
           )}
         </div>
 
-        {/* ввод */}
         <div style={{ borderTop: '1px solid var(--border)', padding: '0.85rem', display: 'flex', gap: '0.6rem', alignItems: 'flex-end' }}>
           <textarea
             className="input"
@@ -231,7 +240,7 @@ export function Chat() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKey}
           />
-          <button className="btn btn-primary" onClick={send} disabled={busy || !input.trim()}>
+          <button className="btn btn-primary" onClick={send} disabled={busy || !input.trim() || !model}>
             {busy ? '…' : 'Отправить'}
           </button>
         </div>

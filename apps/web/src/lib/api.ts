@@ -117,3 +117,50 @@ export async function streamSse(
     }
   }
 }
+
+/** Авторизованный POST со стримингом SSE-ответа (напр. прогресс pull-а модели). */
+export async function streamPost(
+  path: string,
+  body: unknown,
+  onEvent: (data: unknown) => void,
+  retry = true,
+): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (res.status === 401 && retry && (await refresh())) {
+    return streamPost(path, body, onEvent, false);
+  }
+  if (!res.ok || !res.body) {
+    const raw = await res.text().catch(() => '');
+    const d = raw ? (JSON.parse(raw) as { error?: { message?: string } }) : undefined;
+    throw new ApiError(res.status, d?.error?.message ?? `Ошибка ${res.status}`, d);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = frame.split('\n').find((l) => l.startsWith('data:'));
+      if (line) {
+        try {
+          onEvent(JSON.parse(line.slice(5).trim()));
+        } catch {
+          /* пропускаем кадр */
+        }
+      }
+    }
+  }
+}
